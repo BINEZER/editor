@@ -43,7 +43,7 @@ http(s), because pdf.js loads its worker as an ES module. Opening `index.html` f
   layer, but the scanned pixels of other lines are untouched.
 - Text uses the standard PDF fonts (Helvetica, Times, Courier). Characters outside their range, such as
   Ethiopic or CJK, are embedded as an image so they still appear, but they are not selectable.
-- Word export is a best-effort reconstruction: text colours, table borders, ruled lines, vector graphics and page backgrounds are not carried over; rotated
+- Word export is a best-effort reconstruction: vector graphics, page backgrounds and shapes are not carried over (text colours, table borders and cell shading are); rotated
   text is skipped; fonts are mapped to the nearest common one. Scanned pages without OCR come out as pictures.
   Highlights, shapes and drawings are not exported (Word has no equivalent).
 - Password-protected PDFs are not supported yet.

@@ -408,10 +408,80 @@ function buildTable(columns, ctx) {
     out.push(cells);
   });
   const all = columns.flat();
-  return {
+  const table = {
     type: 'table', cols: widths, rows: out, left,
     y0: Math.min(...all.map((s) => s.top)), y1: Math.max(...all.map((s) => s.bottom)),
   };
+  decorateTable(table, rows, columns, ctx);
+  return table;
+}
+
+const lum = (hex) => {
+  const n = parseInt(hex.slice(1), 16);
+  return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+};
+const distinct = (vals, tol = 2) => {
+  const out = [];
+  for (const v of [...vals].sort((a, b) => a - b)) if (!out.length || v - out[out.length - 1] > tol) out.push(v);
+  return out;
+};
+
+/** Borders from ruling lines drawn around/inside the table, and cell shading from filled boxes behind cells. */
+function decorateTable(table, rows, columns, ctx) {
+  const pad = 8;
+  const width = table.cols.reduce((a, b) => a + b, 0);
+  const bx0 = table.left - pad, bx1 = table.left + width + pad, by0 = table.y0 - pad, by1 = table.y1 + pad;
+  const overlap = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+  const hs = [], vs = [];
+  for (const r of ctx.rules || []) {
+    const horizontal = r.y1 - r.y0 < 1.6 && r.x1 - r.x0 > 8;
+    const vertical = r.x1 - r.x0 < 1.6 && r.y1 - r.y0 > 8;
+    if (horizontal && r.y0 >= by0 && r.y0 <= by1 && overlap(r.x0, r.x1, bx0, bx1) >= 0.4 * (bx1 - bx0)) hs.push(r);
+    else if (vertical && r.x0 >= bx0 && r.x0 <= bx1 && overlap(r.y0, r.y1, by0, by1) >= 0.4 * (by1 - by0)) vs.push(r);
+  }
+  const nH = distinct(hs.map((r) => r.y0)).length, nV = distinct(vs.map((r) => r.x0)).length;
+  if (nH >= 2 || nV >= 2) {
+    const used = [...hs, ...vs];
+    const colors = used.map((r) => r.color);
+    const mode = colors.sort((a, b) => colors.filter((c) => c === a).length - colors.filter((c) => c === b).length).pop();
+    table.borders = {
+      horizontal: nH >= 2, vertical: nV >= 2,
+      color: (mode || '#000000').replace('#', ''),
+      size: Math.max(2, Math.min(24, Math.round(median(used.map((r) => r.w)) * 8))),
+    };
+  }
+  // cell shading: the smallest non-white box that contains the cell's text
+  const boxes = (ctx.fills || []).filter((f) => lum(f.color) < 0.97);
+  rows.forEach((r, ri) => {
+    r.cells.forEach((c) => {
+      const cx = (c.s.x0 + c.s.x1) / 2, cy = c.s.y - c.s.size * 0.3;
+      let best = null;
+      for (const f of boxes) {
+        if (cx >= f.x && cx <= f.x + f.w && cy >= f.y && cy <= f.y + f.h && (!best || f.w * f.h < best.w * best.h)) best = f;
+      }
+      if (best) {
+        const cell = table.rows[ri][c.ci];
+        if (cell) cell.fill = best.color.replace('#', '');
+      }
+    });
+  });
+}
+
+/** Light text only makes sense on a background we reproduce (table cell shading); elsewhere fall back to black. */
+function fixContrast(blocks) {
+  const light = (c) => c && lum('#' + c.replace('#', '')) > 0.72;
+  const fixRuns = (runs, bg) => {
+    for (const r of runs) {
+      if (!light(r.color)) continue;
+      if (bg && Math.abs(lum('#' + r.color.replace('#', '')) - lum('#' + bg)) > 0.35) continue; // readable on this shading
+      r.color = undefined;
+    }
+  };
+  for (const b of blocks) {
+    if (b.type === 'p') fixRuns(b.runs, null);
+    else if (b.type === 'table') b.rows.forEach((row) => row.forEach((c) => fixRuns(c.runs, c.fill)));
+    else if (b.type === 'columns') b.cols.forEach((c) => fixContrast(c.blocks));
+  }
 }
 
 function buildBlocks(segs, ctx, bounds) {
@@ -486,7 +556,7 @@ export function analyze(pages, opts = {}) {
   const out = [];
   for (const p of prepared) {
     const before = { ...stats };
-    const ctx = { body, hGap: Math.max(2, 0.4 * body), gutter: Math.max(10, 0.9 * body), stats };
+    const ctx = { body, hGap: Math.max(2, 0.4 * body), gutter: Math.max(10, 0.9 * body), stats, rules: p.rules, fills: p.fills };
     const segs = buildSegments(p.items, FINE);
     stats.textItems += p.items.length;
     if (p.ocr) stats.ocrPages++;
@@ -513,6 +583,7 @@ export function analyze(pages, opts = {}) {
     const blocks = segs.length ? buildBlocks(segs, ctx, bounds) : [];
     placeImages(blocks, images, segs, bounds, stats);
     addSpacing(blocks);
+    fixContrast(blocks);
     const countP = (list) => list.forEach((b) => {
       if (b.type === 'p') { stats.paragraphs++; if (b.heading) stats.headings++; if (b.list) stats.lists++; }
       else if (b.type === 'columns') b.cols.forEach((c) => countP(c.blocks));

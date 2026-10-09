@@ -184,6 +184,43 @@ async function buildSourcePdf(file, scanPng, photoPng) {
   await page.screenshot({ path: path.join(tmp, 'report.png') });
   await page.click('#docxDlg button.primary');
 
+  // ============ 4b) colours, borders and shading
+  {
+    const doc = await PDFDocument.create();
+    const reg = await doc.embedFont(StandardFonts.Helvetica);
+    const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+    const pg = doc.addPage([612, 792]);
+    pg.drawText('A paragraph in plain black text that gives the page its body size.', { x: 72, y: 700, size: 11, font: reg });
+    pg.drawText('Blue heading line of text', { x: 72, y: 660, size: 11, font: reg, color: rgb(0.1, 0.4, 0.8) });
+    pg.drawText('Ghost white text on white', { x: 72, y: 630, size: 11, font: reg, color: rgb(1, 1, 1) });
+    // table: dark header row with white text, thin black borders
+    const cols = [72, 240, 380], right = 480;
+    pg.drawRectangle({ x: 72, y: 540, width: right - 72, height: 20, color: rgb(0.1, 0.14, 0.2) });
+    ['Region', 'Units', 'Revenue'].forEach((c, k) => pg.drawText(c, { x: cols[k] + 4, y: 546, size: 11, font: bold, color: rgb(1, 1, 1) }));
+    const data = [['North', '120', '4,500'], ['South', '95', '3,980'], ['West', '210', '9,120']];
+    data.forEach((r, i) => r.forEach((c, k) => pg.drawText(c, { x: cols[k] + 4, y: 520 - i * 20, size: 11, font: reg })));
+    for (let i = 0; i <= 4; i++) pg.drawLine({ start: { x: 72, y: 560 - i * 20 }, end: { x: right, y: 560 - i * 20 }, thickness: 0.7, color: rgb(0, 0, 0) });
+    for (const x of [...cols, right]) pg.drawLine({ start: { x, y: 560 }, end: { x, y: 480 }, thickness: 0.7, color: rgb(0, 0, 0) });
+    const f2 = path.join(tmp, 'colour.pdf');
+    fs.writeFileSync(f2, await doc.save());
+    await page.evaluate(() => { window.__editor.S.dirty = false; });
+    await page.setInputFiles('#fileOpen', f2);
+    await page.waitForFunction(() => window.__editor.S.pages.length === 1 && window.__editor.S.sources.length === 1);
+    await page.waitForTimeout(500);
+    res = await convert();
+    const f2docx = path.join(tmp, 'colour.docx'); fs.writeFileSync(f2docx, Buffer.from(res.b64, 'base64'));
+    const x4 = zipText(f2docx, 'word/document.xml');
+    const blue = /Blue heading line[\s\S]{0,0}/.test(x4) && (x4.match(/<w:r>(?:(?!<\/w:r>)[\s\S])*?Blue heading line(?:(?!<\/w:r>)[\s\S])*?<\/w:r>/) || [''])[0];
+    const col = (blue.match(/<w:color w:val="(\w+)"/) || [])[1] || '';
+    const rgbv = col ? [0, 2, 4].map((i) => parseInt(col.slice(i, i + 2), 16)) : [0, 0, 0];
+    check('coloured text keeps its colour', rgbv[2] > 150 && rgbv[0] < 70, col);
+    check('table gets borders from the ruling lines', /<w:tblBorders>[\s\S]*?<w:top w:val="single"/.test(x4) && /<w:insideV w:val="single"/.test(x4), (x4.match(/<w:tblBorders>[\s\S]*?<\/w:tblBorders>/) || ['none'])[0].slice(0, 300));
+    check('header row shading is carried over', /<w:shd [^>]*w:fill="1a2433"|<w:shd [^>]*w:fill="1a2332"|<w:shd [^>]*w:fill="1[0-9a-f]2[0-9a-f]3[0-9a-f]"/i.test(x4), (x4.match(/<w:shd [^>]*>/g) || []).join(' '));
+    check('light text on the shaded header stays light', /<w:color w:val="f[0-9a-f]f[0-9a-f]f[0-9a-f]"\/>/i.test(x4), (x4.match(/<w:color [^>]*>/g) || []).join(' '));
+    const ghost = (x4.match(/<w:r>(?:(?!<\/w:r>)[\s\S])*?Ghost white text(?:(?!<\/w:r>)[\s\S])*?<\/w:r>/) || [''])[0];
+    check('white text on a plain page is made readable', ghost.length > 0 && !/w:val="ffffff"/i.test(ghost), ghost.slice(0, 200));
+  }
+
   // ============ 5) round trip through LibreOffice
   if (have('soffice') && have('pdftotext')) {
     const out = path.join(tmp, 'rt'); fs.mkdirSync(out);

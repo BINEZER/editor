@@ -1678,20 +1678,88 @@ const getPageObj = (page, id) =>
     try { page.objs.get(id, (o) => { clearTimeout(t); res(o); }); } catch { clearTimeout(t); res(null); }
   });
 
-async function extractImages(page, vp, p, notes) {
+// Walk the page's drawing operators once and collect pictures, thin rules (table borders) and filled boxes.
+async function extractGraphics(page, vp, p, notes) {
   let ops;
-  try { ops = await page.getOperatorList(); } catch { return []; }
+  try { ops = await page.getOperatorList(); } catch { return { images: [], rules: [], fills: [] }; }
   const { OPS, Util } = pdfjsLib;
   let ctm = [1, 0, 0, 1, 0, 0];
+  let fill = [0, 0, 0], stroke = [0, 0, 0], lineW = 1;
   const stack = [];
   const found = [];
+  const rules = [];
+  const fills = [];
+  let path = []; // { kind: 'line'|'rect', pts }
+  const hex = (c) => '#' + c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+  const rgbOf = (a) => (typeof a === 'string' ? [parseInt(a.slice(1, 3), 16), parseInt(a.slice(3, 5), 16), parseInt(a.slice(5, 7), 16)] : [a[0], a[1], a[2]]);
+  const toPage = (x, y) => {
+    const [a, b, c, d, e, f] = Util.transform(vp.transform, ctm);
+    return [a * x + c * y + e, b * x + d * y + f];
+  };
+  const scale = Math.hypot(...Util.transform(vp.transform, ctm).slice(0, 2)) || 1;
+  const PAINT = new Set([OPS.stroke, OPS.closeStroke, OPS.fill, OPS.eoFill, OPS.fillStroke, OPS.eoFillStroke, OPS.closeFillStroke, OPS.closeEOFillStroke]);
+  const STROKES = new Set([OPS.stroke, OPS.closeStroke, OPS.fillStroke, OPS.eoFillStroke, OPS.closeFillStroke, OPS.closeEOFillStroke]);
+  const FILLS = new Set([OPS.fill, OPS.eoFill, OPS.fillStroke, OPS.eoFillStroke, OPS.closeFillStroke, OPS.closeEOFillStroke]);
+  const page0 = { w: p.w, h: p.h };
+
   for (let i = 0; i < ops.fnArray.length; i++) {
     const fn = ops.fnArray[i], args = ops.argsArray[i];
-    if (fn === OPS.save) stack.push(ctm);
-    else if (fn === OPS.restore) ctm = stack.pop() || ctm;
+    if (fn === OPS.save) stack.push({ ctm, fill, stroke, lineW });
+    else if (fn === OPS.restore) { const t = stack.pop(); if (t) ({ ctm, fill, stroke, lineW } = t); }
     else if (fn === OPS.transform) ctm = Util.transform(ctm, args);
-    else if (fn === OPS.paintFormXObjectBegin) { stack.push(ctm); if (args[0]) ctm = Util.transform(ctm, args[0]); }
-    else if (fn === OPS.paintFormXObjectEnd) ctm = stack.pop() || ctm;
+    else if (fn === OPS.setFillRGBColor) fill = rgbOf(args);
+    else if (fn === OPS.setStrokeRGBColor) stroke = rgbOf(args);
+    else if (fn === OPS.setLineWidth) lineW = args[0];
+    else if (fn === OPS.constructPath) {
+      const [kinds, coords] = args;
+      let k = 0, cur = null;
+      let sub = null; // points of the current sub-path, to recognise rectangles drawn as 4 lines
+      const endSub = () => {
+        if (!sub || sub.pts.length < 4 || sub.pts.length > 5) { sub = null; return; }
+        const xs = sub.pts.map((q) => q[0]), ys = sub.pts.map((q) => q[1]);
+        const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+        const corner = (q) => (Math.abs(q[0] - x0) < 0.3 || Math.abs(q[0] - x1) < 0.3) && (Math.abs(q[1] - y0) < 0.3 || Math.abs(q[1] - y1) < 0.3);
+        if (sub.pts.every(corner)) {
+          path.splice(sub.from, path.length - sub.from, { kind: 'rect', x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+        }
+        sub = null;
+      };
+      for (const op of kinds) {
+        if (op === OPS.moveTo) { endSub(); cur = toPage(coords[k], coords[k + 1]); k += 2; sub = { pts: [cur], from: path.length }; }
+        else if (op === OPS.closePath) { /* the sub-path is closed implicitly */ }
+        else if (op === OPS.lineTo) { const q = toPage(coords[k], coords[k + 1]); k += 2; if (cur) path.push({ kind: 'line', a: cur, b: q }); cur = q; sub?.pts.push(q); }
+        else if (op === OPS.rectangle) {
+          const [x, y, w, h] = [coords[k], coords[k + 1], coords[k + 2], coords[k + 3]]; k += 4;
+          const p1 = toPage(x, y), p2 = toPage(x + w, y + h);
+          path.push({ kind: 'rect', x: Math.min(p1[0], p2[0]), y: Math.min(p1[1], p2[1]), w: Math.abs(p2[0] - p1[0]), h: Math.abs(p2[1] - p1[1]) });
+        } else if (op === OPS.curveTo) { k += 6; cur = null; }
+        else if (op === OPS.curveTo2 || op === OPS.curveTo3) { k += 4; cur = null; }
+      }
+      endSub();
+    } else if (fn === OPS.endPath) path = [];
+    else if (PAINT.has(fn)) {
+      const doFill = FILLS.has(fn), doStroke = STROKES.has(fn);
+      const lw = Math.max(0.25, lineW * scale);
+      for (const sg of path) {
+        if (sg.kind === 'line' && doStroke) {
+          const [x0, y0] = sg.a, [x1, y1] = sg.b;
+          if (Math.abs(y1 - y0) < 0.6 || Math.abs(x1 - x0) < 0.6) rules.push({ x0: Math.min(x0, x1), y0: Math.min(y0, y1), x1: Math.max(x0, x1), y1: Math.max(y0, y1), w: lw, color: hex(stroke) });
+        } else if (sg.kind === 'rect') {
+          if (doFill) {
+            if (Math.min(sg.w, sg.h) <= 1.6 && Math.max(sg.w, sg.h) > 6) {
+              // a filled hairline is how many producers draw a border
+              rules.push({ x0: sg.x, y0: sg.y, x1: sg.x + sg.w, y1: sg.y + sg.h, w: Math.max(0.5, Math.min(sg.w, sg.h)), color: hex(fill) });
+            } else if (sg.w > 4 && sg.h > 4 && !(sg.w >= 0.98 * page0.w && sg.h >= 0.98 * page0.h)) fills.push({ x: sg.x, y: sg.y, w: sg.w, h: sg.h, color: hex(fill) });
+          }
+          if (doStroke) {
+            for (const [x0, y0, x1, y1] of [[sg.x, sg.y, sg.x + sg.w, sg.y], [sg.x, sg.y + sg.h, sg.x + sg.w, sg.y + sg.h], [sg.x, sg.y, sg.x, sg.y + sg.h], [sg.x + sg.w, sg.y, sg.x + sg.w, sg.y + sg.h]])
+              rules.push({ x0, y0, x1, y1, w: lw, color: hex(stroke) });
+          }
+        }
+      }
+      path = [];
+    } else if (fn === OPS.paintFormXObjectBegin) { stack.push({ ctm, fill, stroke, lineW }); if (args[0]) ctm = Util.transform(ctm, args[0]); }
+    else if (fn === OPS.paintFormXObjectEnd) { const t = stack.pop(); if (t) ({ ctm, fill, stroke, lineW } = t); }
     else if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject) {
       const [a, b, c, d, e, f] = Util.transform(vp.transform, ctm);
       const xs = [e, e + a, e + c, e + a + c], ys = [f, f + b, f + d, f + b + d];
@@ -1722,7 +1790,47 @@ async function extractImages(page, vp, p, notes) {
     images.push({ x: f.x, y: f.y, w: f.w, h: f.h, data: bytes });
   }
   if (found.length > 40) notes.droppedImages += found.length - 40;
-  return images;
+  return { images, rules: rules.slice(0, 4000), fills: fills.slice(0, 2000) };
+}
+
+// Estimate each text item's colour from the rendered page: the pixel furthest from the local background.
+// Sampled colours wobble by a few levels (anti-aliasing); snap them to a small per-document palette.
+let inkPalette = [];
+const snapColor = ([r, g, b]) => {
+  const near = inkPalette.find((c) => Math.abs(c[0] - r) + Math.abs(c[1] - g) + Math.abs(c[2] - b) <= 60);
+  if (near) return near;
+  inkPalette.push([r, g, b]);
+  return inkPalette[inkPalette.length - 1];
+};
+function sampleInkColors(canvas, p, items) {
+  const k = canvas.width / p.w;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  for (const it of items) {
+    if (it.color) continue;
+    const x = Math.max(0, Math.floor(it.x * k)), y = Math.max(0, Math.floor((it.y - it.size * 0.8) * k));
+    const w = Math.min(canvas.width - x, Math.ceil(Math.max(it.w, 2) * k)), h = Math.min(canvas.height - y, Math.ceil(it.size * 0.95 * k));
+    if (w < 2 || h < 2 || w * h > 400000) continue;
+    const d = ctx.getImageData(x, y, w, h).data;
+    // background = most common (coarsely quantised) colour in the box
+    const votes = new Map();
+    for (let i = 0; i < d.length; i += 4) {
+      const key = (d[i] >> 4) << 8 | (d[i + 1] >> 4) << 4 | d[i + 2] >> 4;
+      votes.set(key, (votes.get(key) || 0) + 1);
+    }
+    let bgKey = 0, best = 0;
+    for (const [key, n] of votes) if (n > best) { best = n; bgKey = key; }
+    const bg = [((bgKey >> 8) & 15) * 17, ((bgKey >> 4) & 15) * 17, (bgKey & 15) * 17];
+    let maxD = 0;
+    const dist = (i) => Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]);
+    for (let i = 0; i < d.length; i += 4) maxD = Math.max(maxD, dist(i));
+    if (maxD < 90) continue;
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let i = 0; i < d.length; i += 4) if (dist(i) >= 0.92 * maxD) { r += d[i]; g += d[i + 1]; b += d[i + 2]; n++; }
+    if (!n) continue;
+    r = Math.round(r / n); g = Math.round(g / n); b = Math.round(b / n);
+    if (r < 70 && g < 70 && b < 70) continue; // ordinary black text
+    it.color = '#' + snapColor([r, g, b]).map((v) => v.toString(16).padStart(2, '0')).join('');
+  }
 }
 
 async function extractPage(p, notes) {
@@ -1754,7 +1862,11 @@ async function extractPage(p, notes) {
       const fi = infoFor(it.fontName);
       out.items.push({ str: it.str, x: e, y: f, size, w: it.width * vp.scale, font: fi.font, bold: fi.bold, italic: fi.italic });
     }
-    out.images = await extractImages(page, vp, p, notes);
+    const g = await extractGraphics(page, vp, p, notes);
+    out.images = g.images;
+    out.rules = g.rules;
+    out.fills = g.fills;
+    out.colorCanvas = (await renderForOcr(p, 144)).canvas;
   }
   if (!out.items.length) {
     const o = S.ocr.get(p.id);
@@ -1770,6 +1882,12 @@ async function extractPage(p, notes) {
         out.items.push({ str, x, y: baseline, size, w, font: 'Arial', bold: false, italic: false });
       }
     }
+  }
+  if (!out.colorCanvas && out.items.length && !p.blank) out.colorCanvas = (await renderForOcr(p, 144)).canvas;
+  if (out.colorCanvas) {
+    sampleInkColors(out.colorCanvas, p, out.items);
+    out.colorCanvas.width = out.colorCanvas.height = 0;
+    delete out.colorCanvas;
   }
   // fold the user's edits in: covered text/pictures disappear, added text and pictures appear
   const covers = p.annots.filter((a) => a.type === 'whiteout');
@@ -1802,6 +1920,7 @@ async function extractPage(p, notes) {
 async function convertToDocx(progress) {
   const D = await loadScript('./vendor/docx.umd.js', 'docx');
   const notes = { skippedRotated: 0, skippedAnnots: 0, croppedImages: 0, droppedImages: 0 };
+  inkPalette = [];
   const pages = [];
   for (let i = 0; i < S.pages.length; i++) {
     progress?.(`Reading page ${i + 1} of ${S.pages.length}…`);
@@ -1837,7 +1956,7 @@ function showDocxReport({ analysis, notes }) {
   if (notes.skippedAnnots) add(`${notes.skippedAnnots} highlight/shape/drawing annotation${notes.skippedAnnots > 1 ? 's were' : ' was'} not included (Word has no equivalent).`);
   if (notes.droppedImages) add(`${notes.droppedImages} extra pictures were skipped (limit of 40 per page).`, true);
   if (S.pages.some((p) => p.rot)) add('Page rotation set in this editor is ignored in the Word file.');
-  add('Text colours and exact fonts are approximated; Word may substitute fonts you do not have.');
+  add('Text colours, table borders and cell shading are carried over; page backgrounds and drawn shapes are not. Fonts are approximated, and Word may substitute ones you do not have.');
   $('#docxDlg').showModal();
 }
 

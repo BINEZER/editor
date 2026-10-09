@@ -21,7 +21,7 @@ export function wordFont(name, text = '') {
 export function buildDocx(D, analysis) {
   const {
     Document, Paragraph, TextRun, Table, TableRow, TableCell, ImageRun, Tab, HeadingLevel, AlignmentType, TabStopType,
-    WidthType, BorderStyle, TableLayoutType, HorizontalPositionRelativeFrom, VerticalPositionRelativeFrom,
+    WidthType, BorderStyle, ShadingType, TableLayoutType, HorizontalPositionRelativeFrom, VerticalPositionRelativeFrom,
     TextWrappingType, TextWrappingSide, LineRuleType, LevelFormat,
   } = D;
   const NONE = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' };
@@ -108,19 +108,27 @@ export function buildDocx(D, analysis) {
     return out;
   };
 
-  const cell = (children, widthPt) =>
+  const cell = (children, widthPt, o = {}) =>
     new TableCell({
       children: children.length ? children : [new Paragraph({ children: [] })],
       width: { size: tw(widthPt), type: WidthType.DXA },
-      borders: noBorders,
-      margins: { top: 0, bottom: 0, left: 40, right: 40 },
+      borders: o.bordered ? undefined : noBorders,
+      margins: o.bordered ? { top: 30, bottom: 30, left: 70, right: 70 } : { top: 0, bottom: 0, left: 40, right: 40 },
+      shading: o.fill ? { type: ShadingType.CLEAR, fill: o.fill, color: 'auto' } : undefined,
     });
 
+  const lineOf = (b, on) => (on ? { style: BorderStyle.SINGLE, size: b.size, color: b.color } : NONE);
   const tableOpts = (b, page, widths) => ({
     width: { size: tw(widths.reduce((a, c) => a + c, 0)), type: WidthType.DXA },
     columnWidths: widths.map(tw),
     layout: TableLayoutType.FIXED,
-    borders: { ...noBorders, insideHorizontal: NONE, insideVertical: NONE },
+    borders: b.borders
+      ? {
+          top: lineOf(b.borders, b.borders.horizontal), bottom: lineOf(b.borders, b.borders.horizontal),
+          left: lineOf(b.borders, b.borders.vertical), right: lineOf(b.borders, b.borders.vertical),
+          insideHorizontal: lineOf(b.borders, b.borders.horizontal), insideVertical: lineOf(b.borders, b.borders.vertical),
+        }
+      : { ...noBorders, insideHorizontal: NONE, insideVertical: NONE },
     indent: b.left - page.margins.left > 1 ? { size: tw(b.left - page.margins.left), type: WidthType.DXA } : undefined,
   });
 
@@ -136,7 +144,8 @@ export function buildDocx(D, analysis) {
                 c.runs.length
                   ? [new Paragraph({ children: runsOf(c.runs), alignment: ALIGN[c.align] || AlignmentType.LEFT, spacing: { before: 0, after: tw(c.after || 0) } })]
                   : [],
-                b.cols[ci]
+                b.cols[ci],
+                { bordered: !!b.borders, fill: c.fill }
               )
             ),
           })
