@@ -1,7 +1,11 @@
 import * as pdfjsLib from './vendor/pdf.min.mjs';
+import { ocrPages, loadScript } from './ocr.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('./vendor/pdf.worker.min.mjs', import.meta.url).href;
-const { PDFDocument, StandardFonts, rgb, degrees, BlendMode, LineCapStyle } = PDFLib;
+const {
+  PDFDocument, StandardFonts, rgb, degrees, BlendMode, LineCapStyle, PDFOperator, PDFNumber, TextRenderingMode,
+  beginText, endText, setFontAndSize, setTextMatrix, showText, setTextRenderingMode, pushGraphicsState, popGraphicsState,
+} = PDFLib;
 
 const $ = (s) => document.querySelector(s);
 const NS = 'http://www.w3.org/2000/svg';
@@ -29,6 +33,8 @@ const S = {
   sources: [], // { bytes, doc }
   pages: [], // { id, src, idx, blank, w, h, rot, annots[] }
   images: new Map(), // id -> { dataUrl, mime }
+  ocr: new Map(), // page id -> { lang, conf, text, words[], lines[] } (page-space boxes: [text,x,y,w,h,conf])
+  showOcr: false,
   tool: 'select',
   sel: null, // { pid, aid }
   zoom: 1,
@@ -153,6 +159,7 @@ async function openPdf(file) {
     finishEdit(true);
     S.sources.forEach((s) => s.doc.destroy());
     textCache.clear();
+    S.ocr.clear();
     S.sources = [{ bytes: src.bytes, doc: src.doc }];
     S.pages = entriesFor(0, src.sizes);
     S.undo = [];
@@ -196,6 +203,7 @@ function newBlankDocument() {
   S.sources.forEach((s) => s.doc.destroy());
   S.sources = [];
   textCache.clear();
+  S.ocr.clear();
   S.pages = [{ id: nid(), blank: true, w: A4.w, h: A4.h, rot: 0, annots: [] }];
   S.undo = [];
   S.redo = [];
@@ -364,7 +372,8 @@ function markCurrent() {
 }
 
 function updatePageInfo() {
-  $('#pageInfo').textContent = S.pages.length ? `Page ${S.cur + 1} / ${S.pages.length}` : '';
+  const o = S.pages.length && S.ocr.get(S.pages[S.cur]?.id);
+  $('#pageInfo').textContent = S.pages.length ? `Page ${S.cur + 1} / ${S.pages.length}${o ? ` · OCR ${o.conf}%` : ''}` : '';
 }
 
 function scrollToPage(i) {
@@ -412,6 +421,7 @@ function duplicatePage(i) {
   pushUndo();
   const copy = structuredClone(S.pages[i]);
   copy.id = nid();
+  if (S.ocr.has(S.pages[i].id)) S.ocr.set(copy.id, structuredClone(S.ocr.get(S.pages[i].id)));
   S.pages.splice(i + 1, 0, copy);
   buildPages();
 }
@@ -623,6 +633,7 @@ function renderAnnots(p, draft) {
   if (!r) return;
   const svg = r.svg;
   svg.textContent = '';
+  if (S.showOcr) drawOcrOverlay(p, svg);
   for (const a of p.annots) {
     if (editing && editing.a === a) continue;
     svg.append(annotNode(a, false));
@@ -977,13 +988,19 @@ function finishEdit(cancel = false) {
 
 async function textItemsFor(p) {
   if (p.blank) return [];
-  const key = `${p.src}:${p.idx}`;
+  const key = p.id;
   if (textCache.has(key)) return textCache.get(key);
   const promise = (async () => {
     const page = await S.sources[p.src].doc.getPage(p.idx + 1);
     const vp = page.getViewport({ scale: 1 });
     const tc = await page.getTextContent();
     const items = [];
+    // lines recognised by OCR are editable too (scanned pages have no real text)
+    for (const [str, x, y, w, h, conf] of S.ocr.get(p.id)?.lines || []) {
+      if (conf < 30) continue;
+      const { size, baseline } = ocrMetrics(str, y, h);
+      items.push({ str, x, y: baseline, size, w, font: 'Helvetica', box: { x, y, w, h } });
+    }
     for (const it of tc.items) {
       if (!it.str || !it.str.trim()) continue;
       const [a, b, , , e, f] = pdfjsLib.Util.transform(vp.transform, it.transform);
@@ -1000,10 +1017,27 @@ async function textItemsFor(p) {
   textCache.set(key, promise);
   return promise;
 }
-const hitItem = (items, pt) =>
-  items.find(
-    (it) => pt.x >= it.x - 2 && pt.x <= it.x + it.w + 2 && pt.y >= it.y - it.size * 0.95 && pt.y <= it.y + it.size * 0.3
-  );
+// Tesseract boxes hug the glyphs: ascender/digit top to baseline, or to the descender when there is one.
+// Estimate the font size and baseline from that so replacement text matches the scan.
+function ocrMetrics(text, y, h) {
+  const longDesc = /[gjpqy]/.test(text);
+  const shortDesc = !longDesc && /[,;()Q$]/.test(text);
+  const below = longDesc ? 0.21 : shortDesc ? 0.1 : 0; // descender depth, in em
+  const size = h / (0.74 + below);
+  return { size, baseline: y + size * 0.74 };
+}
+// the on-page rectangle of an editable text item
+function itemRect(it) {
+  if (it.box) return { x: it.box.x - 2, y: it.box.y - 2, w: it.box.w + 4, h: it.box.h + 4 };
+  return { x: it.x - 1, y: it.y - it.size * 0.9, w: it.w + 2, h: it.size * 1.15 };
+}
+function hitItem(items, pt) {
+  const slop = 2;
+  return items.find((it) => {
+    const r = itemRect(it);
+    return pt.x >= r.x - slop && pt.x <= r.x + r.w + slop && pt.y >= r.y - slop && pt.y <= r.y + r.h + slop;
+  });
+}
 
 async function hoverText(e) {
   const svg = e.target.closest('svg');
@@ -1017,10 +1051,11 @@ async function hoverText(e) {
   document.querySelectorAll('.pgi .hov').forEach((n) => n.remove());
   const r = document.createElementNS(NS, 'rect');
   r.setAttribute('class', 'hov');
-  r.setAttribute('x', it.x - 1);
-  r.setAttribute('y', it.y - it.size * 0.9);
-  r.setAttribute('width', it.w + 2);
-  r.setAttribute('height', it.size * 1.15);
+  const ir = itemRect(it);
+  r.setAttribute('x', ir.x);
+  r.setAttribute('y', ir.y);
+  r.setAttribute('width', ir.w);
+  r.setAttribute('height', ir.h);
   svg.append(r);
 }
 
@@ -1044,10 +1079,9 @@ async function editExistingText(p, pt) {
   if (!it) return toast('No editable text here. Scanned pages need OCR first.');
   const sx = it.x > 3 ? it.x - 2 : it.x + it.w + 2;
   const bg = sampleBackground(p, sx, it.y - it.size * 0.3);
+  const cover = itemRect(it);
   pushUndo();
-  p.annots.push(
-    newAnnot('whiteout', { x: it.x - 1, y: it.y - it.size * 0.9, w: it.w + 2, h: it.size * 1.15, color: bg })
-  );
+  p.annots.push(newAnnot('whiteout', { ...cover, color: bg }));
   const t = newAnnot('text', { x: it.x, y: it.y - it.size * BASELINE, text: it.str, size: Math.round(it.size * 10) / 10, font: it.font });
   p.annots.push(t);
   editText(p, t, false);
@@ -1228,6 +1262,7 @@ async function rasterText(a) {
 
 async function buildPdf() {
   const out = await PDFDocument.create();
+  ethiopicFont = null;
   const fontCache = new Map();
   const getFont = async (family, bold) => {
     const key = family + bold;
@@ -1266,9 +1301,68 @@ async function buildPdf() {
     }
     const m = makeMap(page);
     for (const a of p.annots) await drawAnnot(page, m, a, getFont, getImage);
+    const ocr = S.ocr.get(p.id);
+    if (ocr?.words.length) await drawOcrLayer(out, page, m, ocr, p.annots, getFont);
     page.setRotation(degrees((m.R + p.rot) % 360));
   }
   return out.save();
+}
+
+// Invisible text (render mode 3) positioned over each recognised word, so the PDF is searchable/selectable.
+let ethiopicFont = null; // per export: set to a promise by getOcrFallbackFont
+async function getOcrFallbackFont(out) {
+  try {
+    const fontkit = await loadScript('./vendor/fontkit.umd.min.js', 'fontkit');
+    out.registerFontkit(fontkit);
+    const bytes = await (await fetch(new URL('./vendor/fonts/noto-sans-ethiopic-ethiopic-400-normal.woff', import.meta.url))).arrayBuffer();
+    try { return await out.embedFont(bytes, { subset: true }); } catch { return await out.embedFont(bytes); }
+  } catch (err) {
+    console.warn('Ethiopic font unavailable; non-Latin OCR text will not be searchable', err);
+    return null;
+  }
+}
+async function drawOcrLayer(out, page, m, ocr, annots, getFont) {
+  const covers = annots.filter((a) => a.type === 'whiteout');
+  // words under a cover box were replaced by the user: leave them out of the hidden text layer
+  const covered = ([, x, y, w, h]) =>
+    covers.some((c) => {
+      const ix = Math.min(x + w, c.x + c.w) - Math.max(x, c.x);
+      const iy = Math.min(y + h, c.y + c.h) - Math.max(y, c.y);
+      return ix > 0 && iy > 0 && (ix * iy) / (w * h) > 0.5;
+    });
+  const helv = await getFont('Helvetica', false);
+  const keys = new Map();
+  const keyFor = (font) => {
+    if (!keys.has(font)) { page.setFont(font); keys.set(font, page.fontKey); }
+    return keys.get(font);
+  };
+  const cos = Math.cos((m.R * Math.PI) / 180);
+  const sin = Math.sin((m.R * Math.PI) / 180);
+  const ops = [pushGraphicsState(), setTextRenderingMode(TextRenderingMode.Invisible)];
+  for (const wd of ocr.words) {
+    if (covered(wd)) continue;
+    const [text, x, y, w, h] = wd;
+    let font = helv;
+    try { helv.encodeText(text); } catch {
+      if (ethiopicFont === null) ethiopicFont = getOcrFallbackFont(out);
+      font = await ethiopicFont;
+      if (!font) continue;
+    }
+    const { size, baseline } = ocrMetrics(text, y, h);
+    const natural = font.widthOfTextAtSize(text, size);
+    const tz = natural > 0 ? Math.min(1000, Math.max(10, (w / natural) * 100)) : 100;
+    const [ux, uy] = m.pt(x, baseline);
+    ops.push(
+      beginText(),
+      setFontAndSize(keyFor(font), size),
+      PDFOperator.of('Tz', [PDFNumber.of(tz)]),
+      setTextMatrix(cos, sin, -sin, cos, ux, uy),
+      showText(font.encodeText(text)),
+      endText()
+    );
+  }
+  ops.push(popGraphicsState());
+  page.pushOperators(...ops);
 }
 
 async function drawAnnot(page, m, a, getFont, getImage) {
@@ -1364,6 +1458,166 @@ async function savePdf() {
   }
 }
 
+/* ---------------------------------------------------------------- OCR */
+
+function drawOcrOverlay(p, svg) {
+  const o = S.ocr.get(p.id);
+  if (!o) return;
+  const g = document.createElementNS(NS, 'g');
+  for (const [, x, y, w, h, conf] of o.words) {
+    const r = document.createElementNS(NS, 'rect');
+    r.setAttribute('class', 'ocrw ' + (conf >= 85 ? 'hi' : conf >= 60 ? 'mid' : 'lo'));
+    r.setAttribute('x', x);
+    r.setAttribute('y', y);
+    r.setAttribute('width', w);
+    r.setAttribute('height', h);
+    g.append(r);
+  }
+  svg.append(g);
+}
+
+async function pageHasText(p) {
+  if (p.blank) return false;
+  const pg = await S.sources[p.src].doc.getPage(p.idx + 1);
+  const tc = await pg.getTextContent();
+  return tc.items.some((it) => it.str && it.str.trim());
+}
+
+async function renderForOcr(p, dpi) {
+  const page = await S.sources[p.src].doc.getPage(p.idx + 1);
+  const base = page.getViewport({ scale: 1 });
+  const scale = Math.min(dpi / 72, 7000 / Math.max(base.width, base.height));
+  const vp = page.getViewport({ scale });
+  const c = document.createElement('canvas');
+  c.width = Math.ceil(vp.width);
+  c.height = Math.ceil(vp.height);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  return { canvas: c, scale: c.width / p.w };
+}
+
+function listOcrResults() {
+  const ul = $('#ocrResults');
+  ul.textContent = '';
+  S.pages.forEach((p, i) => {
+    const o = S.ocr.get(p.id);
+    if (!o) return;
+    const li = document.createElement('li');
+    if (o.conf < 70) li.className = 'low';
+    li.innerHTML = `<span>Page ${i + 1}${o.conf < 70 ? ' — low confidence, please review' : ''}</span><span>${o.conf}% · ${o.words.length} words</span>`;
+    ul.append(li);
+  });
+  $('#ocrTxt').disabled = $('#ocrClear').disabled = !ul.children.length;
+}
+
+function refreshOcrViews(pages) {
+  for (const p of pages) { textCache.delete(p.id); renderAnnots(p); }
+  updatePageInfo();
+}
+
+let ocrAbort = null;
+async function runOcr() {
+  const scope = $('#ocrScope').value;
+  const lang = $('#ocrLang').value;
+  const dpi = Number($('#ocrDpi').value);
+  let items = scope === 'current' ? [S.pages[S.cur]] : S.pages.slice();
+  items = items.filter((p) => p && !p.blank);
+  if (scope === 'empty') {
+    const keep = [];
+    for (const p of items) if (!(await pageHasText(p)) && !S.ocr.has(p.id)) keep.push(p);
+    items = keep;
+  }
+  if (!items.length) return toast(scope === 'empty' ? 'Every page already has text — nothing to recognise.' : 'Nothing to recognise.');
+
+  ocrAbort = new AbortController();
+  const ctl = ocrAbort;
+  $('#ocrProg').hidden = false;
+  $('#ocrBar').value = 0;
+  $('#ocrStatus').textContent = 'Starting…';
+  const busyEls = ['#ocrScope', '#ocrLang', '#ocrDpi', '#ocrRun', '#ocrTxt', '#ocrClear'].map($);
+  busyEls.forEach((el) => (el.disabled = true));
+  $('#ocrClose').textContent = 'Cancel';
+  const done = [];
+  let failed = null;
+  try {
+    await ocrPages({
+      items,
+      lang,
+      workers: Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1)),
+      signal: ctl.signal,
+      renderItem: (p) => renderForOcr(p, dpi),
+      onPageDone: (p, r) => {
+        S.ocr.set(p.id, { lang, ...r });
+        done.push(p);
+        S.dirty = true;
+        refreshOcrViews([p]);
+        listOcrResults();
+      },
+      onProgress: ({ done: d, total, fraction, status }) => {
+        $('#ocrBar').value = fraction;
+        $('#ocrStatus').textContent = `${status} — ${d} of ${total} page${total === 1 ? '' : 's'} done`;
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    failed = err;
+  }
+  ocrAbort = null;
+  $('#ocrProg').hidden = true;
+  $('#ocrClose').textContent = 'Close';
+  busyEls.forEach((el) => (el.disabled = false));
+  listOcrResults();
+  if (failed) toast('OCR failed: ' + (failed.message || failed), true);
+  else if (ctl.signal.aborted) toast(`OCR cancelled${done.length ? ` — kept ${done.length} finished page${done.length === 1 ? '' : 's'}` : ''}.`);
+  else toast(`Recognised text on ${done.length} page${done.length === 1 ? '' : 's'}.`);
+}
+
+function downloadOcrText() {
+  const parts = [];
+  S.pages.forEach((p, i) => {
+    const o = S.ocr.get(p.id);
+    if (o) parts.push(`--- Page ${i + 1} ---\n${o.text}`);
+  });
+  if (!parts.length) return;
+  const url = URL.createObjectURL(new Blob([parts.join('\n\n') + '\n'], { type: 'text/plain;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${S.fileName}-text.txt`;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function initOcr() {
+  const dlg = $('#ocrDlg');
+  $('#btnOcr').onclick = () => {
+    finishEdit();
+    $('#ocrProg').hidden = true;
+    $('#ocrShow').checked = S.showOcr;
+    listOcrResults();
+    dlg.showModal();
+  };
+  $('#ocrRun').onclick = runOcr;
+  $('#ocrClose').onclick = () => dlg.close();
+  dlg.addEventListener('close', () => ocrAbort?.abort());
+  $('#ocrTxt').onclick = downloadOcrText;
+  $('#ocrShow').onchange = (e) => {
+    S.showOcr = e.target.checked;
+    S.pages.forEach((p) => renderAnnots(p));
+  };
+  $('#ocrClear').onclick = () => {
+    if (!confirm('Remove recognised text from all pages?')) return;
+    const had = S.pages.filter((p) => S.ocr.has(p.id));
+    S.ocr.clear();
+    refreshOcrViews(had);
+    listOcrResults();
+    S.dirty = true;
+  };
+}
+
 /* ---------------------------------------------------------------- wiring */
 
 function deleteSelected() {
@@ -1392,6 +1646,7 @@ function initKeys(signature) {
   window.addEventListener('keydown', (e) => {
     const mod = e.ctrlKey || e.metaKey;
     const typing = e.target.matches?.('input[type=number],input[type=text],textarea,select');
+    if (document.querySelector('dialog[open]')) return;
     if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); savePdf(); return; }
     if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); $('#fileOpen').click(); return; }
     if (typing || !S.pages.length) return;
@@ -1418,6 +1673,7 @@ function init() {
   initThumbEvents();
   initPointer();
   initProps();
+  initOcr();
   initKeys(signature);
 
   $('#btnOpen').onclick = $('#btnOpen2').onclick = () => $('#fileOpen').click();

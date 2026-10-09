@@ -2,7 +2,7 @@
 
 Platform: web app (installable PWA). Build method: AI app builder driving a git repo. Processing: local-first in the browser, with an optional online worker for heavy jobs. Target cost: $0 fixed, with every paid upgrade optional.
 
-Status of the repo: a working prototype of Stage 1 already exists (`index.html`, `app.js`, `style.css`, `vendor/`). It is a no-build static app using pdf.js and pdf-lib. This spec extends it.
+Status of the repo: Stage 1 (core editor) and Stage 3 (OCR: English and Amharic, searchable-PDF output, editing of scanned lines, text download, confidence view) are built and covered by `npm test`. Not yet built: deskew (O3), per-page retry, online OCR worker (O6), PDF-to-DOCX (Stage 4), and Stage 2 items (image conversion, print-ready options).
 
 ---
 

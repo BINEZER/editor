@@ -19,6 +19,10 @@ http(s), because pdf.js loads its worker as an ES module. Opening `index.html` f
 - Highlight, freehand draw, rectangle, ellipse, line, whiteout box.
 - Insert images and a drawn signature (saved locally for reuse).
 - Select, move, resize, and delete annotations. Nudge with arrow keys. Unlimited undo and redo.
+- **OCR** (toolbar → OCR): recognises text on scanned pages entirely on your device (Tesseract.js, English and
+  Amharic). The export gets an invisible text layer, so the PDF is searchable and selectable and looks identical.
+  Recognised lines can be changed with Edit text, and the text can be downloaded as `.txt`. "Show recognised words"
+  colours each word by confidence (green / amber / red) so you can review weak spots.
 - Download a flattened PDF. Page rotation, crop boxes and rotated source pages are handled.
 - Keyboard: V T E H D R O L W for tools, I image, S signature, Ctrl+Z / Ctrl+Shift+Z, Ctrl+S, Delete.
 
@@ -27,7 +31,11 @@ http(s), because pdf.js loads its worker as an ES module. Opening `index.html` f
 - **Edit text covers the old text; it does not delete it.** The original text stays in the PDF
   underneath the cover box and can still be selected or extracted. Do not use Whiteout or Edit text to
   hide sensitive information. Real redaction is planned (see `SPEC.md`).
-- Edit text works one text run at a time, on upright text only. Scanned pages have no text to edit (OCR is planned).
+- Edit text works one text run (or one OCR line) at a time, on upright text only.
+- OCR accuracy depends on the scan. Clean 300 DPI print is very good; skewed, faint or handwritten pages are not
+  supported yet (no deskew). Only English and Amharic are bundled. Each extra language is one `.traineddata.gz` file in `vendor/tessdata/`.
+- OCR'd text is hidden under the scan: editing a line covers the scan with a box and drops that line from the hidden
+  layer, but the scanned pixels of other lines are untouched.
 - Text uses the standard PDF fonts (Helvetica, Times, Courier). Characters outside their range, such as
   Ethiopic or CJK, are embedded as an image so they still appear, but they are not selectable.
 - Password-protected PDFs are not supported yet.
@@ -44,5 +52,5 @@ rotation by rendering the export and testing pixels.
 
 ## Third-party code
 
-pdf.js (Apache-2.0, `vendor/PDFJS-LICENSE`) and pdf-lib (MIT), vendored in `vendor/`.
+See `THIRD_PARTY_NOTICES.md`. Everything is vendored in `vendor/`; nothing is loaded from a CDN.
 See `SPEC.md` for the product roadmap.

@@ -13,6 +13,7 @@
     <button id="btnOpen" class="primary" title="Open a PDF (Ctrl+O)">Open</button>
     <button id="btnAdd" class="needs-doc" title="Append the pages of another PDF">Add PDF</button>
     <button id="btnBlank" class="needs-doc" title="Insert a blank page after the current page">+ Blank page</button>
+    <button id="btnOcr" class="needs-doc" title="Recognise text in scanned pages (OCR)">OCR</button>
   </div>
 
   <div class="grp needs-doc" id="tools" role="toolbar" aria-label="Tools">
@@ -90,6 +91,48 @@
       <span class="grow"></span>
       <button type="button" id="sigCancel">Cancel</button>
       <button type="button" id="sigUse" class="primary">Place signature</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="ocrDlg">
+  <form method="dialog" id="ocrForm">
+    <h2>Recognise text (OCR)</h2>
+    <p class="muted">Runs on this device. Pages look the same; an invisible text layer is added so the PDF becomes searchable and selectable, and the Edit text tool can change scanned text.</p>
+    <div class="fields">
+      <label>Pages
+        <select id="ocrScope">
+          <option value="empty">Pages without text</option>
+          <option value="current">Current page</option>
+          <option value="all">All pages (adds a second layer to pages that already have text)</option>
+        </select>
+      </label>
+      <label>Language
+        <select id="ocrLang">
+          <option value="eng">English</option>
+          <option value="amh">Amharic (አማርኛ)</option>
+          <option value="amh+eng">Amharic + English</option>
+        </select>
+      </label>
+      <label>Quality
+        <select id="ocrDpi">
+          <option value="300">300 DPI (best)</option>
+          <option value="200">200 DPI (faster)</option>
+        </select>
+      </label>
+    </div>
+    <div id="ocrProg" hidden>
+      <progress id="ocrBar" max="1" value="0"></progress>
+      <div id="ocrStatus" class="muted"></div>
+    </div>
+    <ul id="ocrResults"></ul>
+    <div class="row">
+      <label><input type="checkbox" id="ocrShow"> Show recognised words</label>
+      <span class="grow"></span>
+      <button type="button" id="ocrTxt">Download text</button>
+      <button type="button" id="ocrClear">Remove OCR</button>
+      <button type="button" id="ocrClose">Close</button>
+      <button type="button" id="ocrRun" class="primary">Run OCR</button>
     </div>
   </form>
 </dialog>

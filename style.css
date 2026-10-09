@@ -133,3 +133,18 @@ dialog .row label { display: flex; gap: 6px; align-items: center; color: var(--m
   #side { width: 110px; }
   #pages { padding: 10px; }
 }
+
+/* OCR dialog */
+dialog .fields { display: grid; gap: 10px; margin: 12px 0; }
+dialog .fields label { display: grid; grid-template-columns: 90px 1fr; align-items: center; gap: 8px; color: var(--muted); }
+dialog .fields select { width: 100%; }
+#ocrProg { margin: 12px 0; }
+#ocrBar { width: 100%; height: 10px; accent-color: var(--accent); }
+#ocrResults { list-style: none; margin: 10px 0 0; padding: 0; max-height: 170px; overflow: auto; font-size: 13px; }
+#ocrResults li { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid var(--line); }
+#ocrResults li.low { color: #b54708; }
+#ocrResults:empty { display: none; }
+.pgi .ocrw { pointer-events: none; fill-opacity: .22; stroke-width: .6; vector-effect: non-scaling-stroke; }
+.pgi .ocrw.hi { fill: #12b76a; stroke: #12b76a; }
+.pgi .ocrw.mid { fill: #f79009; stroke: #f79009; }
+.pgi .ocrw.lo { fill: #f04438; stroke: #f04438; }
