@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PDF Editor</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="empty">
+
+<header id="bar">
+  <div class="grp">
+    <button id="btnOpen" class="primary" title="Open a PDF (Ctrl+O)">Open</button>
+    <button id="btnAdd" class="needs-doc" title="Append the pages of another PDF">Add PDF</button>
+    <button id="btnBlank" class="needs-doc" title="Insert a blank page after the current page">+ Blank page</button>
+  </div>
+
+  <div class="grp needs-doc" id="tools" role="toolbar" aria-label="Tools">
+    <button data-tool="select" title="Select / move (V)">Select</button>
+    <button data-tool="text" title="Add text (T)">Text</button>
+    <button data-tool="edit" title="Click existing text to change it (E)">Edit text</button>
+    <button data-tool="highlight" title="Highlight (H)">Highlight</button>
+    <button data-tool="draw" title="Freehand draw (D)">Draw</button>
+    <button data-tool="rect" title="Rectangle (R)">Rect</button>
+    <button data-tool="ellipse" title="Ellipse (O)">Ellipse</button>
+    <button data-tool="line" title="Line (L)">Line</button>
+    <button data-tool="whiteout" title="Cover with a solid box (W)">Whiteout</button>
+    <button data-tool="image" title="Insert an image (I)">Image</button>
+    <button data-tool="signature" title="Draw and place a signature (S)">Sign</button>
+  </div>
+
+  <div class="grp needs-doc props" id="props">
+    <label id="gColor">Color <input type="color" id="pColor" value="#d92d20"></label>
+    <label id="gSize">Size <input type="number" id="pSize" min="4" max="300" step="1" value="18"></label>
+    <label id="gStroke">Stroke <input type="number" id="pStroke" min="0.5" max="60" step="0.5" value="2"></label>
+    <label id="gFont">
+      <select id="pFont" aria-label="Font">
+        <option value="Helvetica">Helvetica</option>
+        <option value="Times">Times</option>
+        <option value="Courier">Courier</option>
+      </select>
+    </label>
+    <label id="gBold"><input type="checkbox" id="pBold"> Bold</label>
+  </div>
+
+  <div class="grp needs-doc">
+    <button id="btnUndo" title="Undo (Ctrl+Z)">Undo</button>
+    <button id="btnRedo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+  </div>
+
+  <div class="grp needs-doc">
+    <button id="zOut" title="Zoom out">−</button>
+    <span id="zLabel">100%</span>
+    <button id="zIn" title="Zoom in">+</button>
+    <button id="zFit" title="Fit width">Fit</button>
+    <span id="pageInfo" class="muted"></span>
+  </div>
+
+  <div class="grp right">
+    <button id="btnSave" class="primary needs-doc" title="Download edited PDF (Ctrl+S)">Download PDF</button>
+  </div>
+</header>
+
+<div id="main">
+  <aside id="side" class="needs-doc">
+    <ul id="thumbs"></ul>
+  </aside>
+  <main id="viewer">
+    <div id="pages"></div>
+    <section id="drop">
+      <h1>PDF Editor</h1>
+      <p>Edit text, annotate, sign, and reorganise pages — entirely in your browser. Your files never leave this device.</p>
+      <div class="row">
+        <button id="btnOpen2" class="primary big">Open a PDF</button>
+        <button id="btnNew" class="big">Start with a blank page</button>
+      </div>
+      <p class="muted">…or drop a PDF anywhere on this window.</p>
+    </section>
+  </main>
+</div>
+
+<dialog id="sigDlg">
+  <form method="dialog" id="sigForm">
+    <h2>Draw your signature</h2>
+    <canvas id="sigCanvas" width="640" height="220"></canvas>
+    <div class="row">
+      <label>Ink <input type="color" id="sigColor" value="#111827"></label>
+      <button type="button" id="sigClear">Clear</button>
+      <button type="button" id="sigSaved" hidden>Use saved</button>
+      <span class="grow"></span>
+      <button type="button" id="sigCancel">Cancel</button>
+      <button type="button" id="sigUse" class="primary">Place signature</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="busy" hidden><div class="spin"></div><span id="busyMsg">Working…</span></div>
+<div id="toast" role="status"></div>
+
+<input type="file" id="fileOpen" accept="application/pdf,.pdf" hidden>
+<input type="file" id="fileAdd" accept="application/pdf,.pdf" multiple hidden>
+<input type="file" id="fileImg" accept="image/*" hidden>
+
+<script src="vendor/pdf-lib.min.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
