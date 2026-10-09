@@ -2,7 +2,7 @@
 
 Platform: web app (installable PWA). Build method: AI app builder driving a git repo. Processing: local-first in the browser, with an optional online worker for heavy jobs. Target cost: $0 fixed, with every paid upgrade optional.
 
-Status of the repo: Stage 1 (core editor), Stage 3 (OCR: English and Amharic, searchable-PDF output, editing of scanned lines, text download, confidence view) and Stage 4 (local PDF-to-DOCX: paragraphs, headings, lists, tables, column layouts, pictures, OCR input, fidelity report, round-trip test) are built and covered by `npm test`. Not yet built: deskew (O3), per-page retry, online OCR worker (O6), page backgrounds and vector shapes in Word export, DOCX-to-PDF (F3), and Stage 2 items (image conversion, print-ready options).
+Status of the repo: Stage 1 (core editor), Stage 3 (OCR: English and Amharic, searchable-PDF output, editing of scanned lines, text download, confidence view) and Stage 4 (local PDF-to-DOCX: paragraphs, headings, lists, tables, column layouts, pictures, OCR input, fidelity report, round-trip test) are built and covered by `npm test`. Stage 2 is partly built: PDF to images (F1) and image conversion (F4, F5) with dpi metadata, print-ready PDF with paper size / scaling / margins / N-up / bleed / crop marks (X3), raster export at chosen dpi (X4). Not yet built: grayscale/colour conversion for PDF output, PDF/X, booklet imposition, image crop/rotate/opacity, custom fonts, autosave and PWA/offline, HEIC. Also not built: deskew (O3), per-page retry, online OCR worker (O6), page backgrounds and vector shapes in Word export, DOCX-to-PDF (F3), and Stage 2 items (image conversion, print-ready options).
 
 ---
 

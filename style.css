@@ -152,3 +152,32 @@ dialog .fields select { width: 100%; }
 /* DOCX report */
 #docxNotes { margin: 10px 0 0; padding-left: 20px; font-size: 13px; display: grid; gap: 4px; }
 #docxNotes li.warn { color: #b54708; }
+
+/* export + image dialogs */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 6px 0 12px; }
+.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 12px; color: var(--muted); }
+.tabs button[aria-selected=true] { color: var(--text); border-bottom-color: var(--accent); }
+dialog .fields label > input[type=text], dialog .fields label > input[type=number], dialog .fields label > select { width: 100%; }
+dialog .fields label > span { display: flex; align-items: center; gap: 8px; color: var(--text); }
+dialog .fields label > span.inline { display: flex; }
+dialog .fields label > span.inline select { flex: 1; width: auto; }
+dialog .fields label > span.inline input { width: 90px; }
+dialog .fields label[hidden], dialog .fields label.pdfonly[hidden] { display: none; }
+dialog .fields input[type=range] { flex: 1; }
+.dropzone { display: flex; align-items: center; gap: 12px; padding: 14px; border: 2px dashed var(--line); border-radius: 10px; margin: 8px 0; }
+.dropzone.over { border-color: var(--accent); background: var(--active); }
+#imgList { list-style: none; margin: 6px 0 10px; padding: 0; max-height: 140px; overflow: auto; font-size: 13px; }
+#imgList li { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; border-bottom: 1px solid var(--line); }
+#imgList li span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#imgList li.bad { color: #b42318; }
+#expProg, #imgProg { margin: 10px 0; }
+#expBar, #imgBar { width: 100%; height: 10px; accent-color: var(--accent); }
+
+/* printing: show only the rendered pages */
+#printRoot { display: none; }
+@media print {
+  body > *:not(#printRoot) { display: none !important; }
+  html, body { height: auto; background: #fff; }
+  #printRoot { display: block !important; }
+  #printRoot canvas { display: block; break-after: page; }
+}

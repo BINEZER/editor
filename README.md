@@ -28,6 +28,16 @@ http(s), because pdf.js loads its worker as an ES module. Opening `index.html` f
   aligned columns of short text become tables, multi-column prose becomes a borderless table so reading order is kept,
   and pictures are carried across. Scanned pages use their OCR text. Your edits (changed text, added text/images)
   are included. A report lists pages that need attention.
+- **Export…** (toolbar):
+  - *Print-ready PDF*: choose paper size (A3–Tabloid or same as the pages), orientation, scaling (shrink / fit /
+    actual size), margins, 1/2/4/6/9 pages per sheet, bleed (3 mm etc., blank or enlarged pages) and crop marks.
+    TrimBox and BleedBox are written into the file. A page range is supported. **Print…** sends the same layout to
+    the browser's print dialog.
+  - *Page images*: PNG, JPEG, WebP or BMP at 72–600 dpi, optional grayscale, page range. The dpi is written into
+    PNG, JPEG and BMP files. Several pages are saved as a ZIP.
+- **Images…**: convert PNG / JPEG / WebP / GIF / BMP / SVG to PNG, JPEG, WebP or BMP (EXIF rotation applied,
+  transparency flattened to white for JPEG, resize by longest side or percentage), or turn any number of images into a
+  PDF with one page per image. The PDF can be opened straight in the editor.
 - Download a flattened PDF. Page rotation, crop boxes and rotated source pages are handled.
 - Keyboard: V T E H D R O L W for tools, I image, S signature, Ctrl+Z / Ctrl+Shift+Z, Ctrl+S, Delete.
 
@@ -46,6 +56,11 @@ http(s), because pdf.js loads its worker as an ES module. Opening `index.html` f
 - Word export is a best-effort reconstruction: vector graphics, page backgrounds and shapes are not carried over (text colours, table borders and cell shading are); rotated
   text is skipped; fonts are mapped to the nearest common one. Scanned pages without OCR come out as pictures.
   Highlights, shapes and drawings are not exported (Word has no equivalent).
+- Print-ready PDF keeps text and vector content as is, so it cannot convert colours (no grayscale / CMYK conversion)
+  and does not embed an output intent; it is not a certified PDF/X file.
+- Browsers print every page on the first page's paper size, so when pages differ the print dialog fits them onto
+  that paper. Use *Download PDF* with a paper size chosen for exact control.
+- HEIC and TIFF images cannot be read by the browser, so the image tool skips them with a message.
 - Password-protected PDFs are not supported yet.
 
 ## Tests

@@ -2,6 +2,8 @@ import * as pdfjsLib from './vendor/pdf.min.mjs';
 import { ocrPages, loadScript } from './ocr.js';
 import { analyze } from './layout.js';
 import { buildDocx } from './docx-build.js';
+import { parseRange, buildPrintPdf, imagesToPdf, decodeImage, hasAlpha, resizeCanvas, toGrayscale, encodeCanvas } from './convert.js';
+import { zipSync } from './vendor/fflate.mjs';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('./vendor/pdf.worker.min.mjs', import.meta.url).href;
 const {
@@ -1983,6 +1985,309 @@ async function exportDocx() {
   }
 }
 
+/* ---------------------------------------------------------------- export: print-ready PDF, print, page images */
+
+function saveBytes(name, bytes, mime) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+const zipFiles = (files) => zipSync(Object.fromEntries(files.map((f) => [f.name, [f.bytes, { level: 0 }]])));
+
+function setProgress(prefix, frac, msg) {
+  const box = $(`#${prefix}Prog`);
+  box.hidden = frac == null;
+  if (frac != null) { $(`#${prefix}Bar`).value = frac; $(`#${prefix}Status`).textContent = msg || ''; }
+}
+
+function printOptions() {
+  return {
+    paper: $('#xPaper').value, orientation: $('#xOrient').value, scale: $('#xScale').value,
+    margin: Math.max(0, Number($('#xMargin').value) || 0), nup: Number($('#xNup').value),
+    bleed: Math.max(0, Number($('#xBleed').value) || 0), bleedMode: $('#xBleedMode').value, marks: $('#xMarks').checked,
+  };
+}
+
+async function makePrintPdf(o, rangeText) {
+  const pages = parseRange(rangeText, S.pages.length);
+  const flat = await buildPdf();
+  return (await buildPrintPdf(PDFLib, flat, { ...o, pages })).bytes;
+}
+
+async function openForRender(bytes) {
+  return pdfjsLib.getDocument({
+    data: bytes.slice(),
+    cMapUrl: new URL('./vendor/cmaps/', import.meta.url).href,
+    cMapPacked: true,
+    standardFontDataUrl: new URL('./vendor/standard_fonts/', import.meta.url).href,
+    isEvalSupported: false,
+  }).promise;
+}
+
+/** Render pages of a PDF (bytes) at `dpi`; calls onPage(canvas, indexInList) and lets it release the canvas. */
+async function renderPdfPages(bytes, indices, dpi, onPage) {
+  const doc = await openForRender(bytes);
+  try {
+    let total = 0;
+    for (const i of indices) {
+      const vp = (await doc.getPage(i + 1)).getViewport({ scale: dpi / 72 });
+      if (Math.max(vp.width, vp.height) > 16000) throw new Error(`Page ${i + 1} would be ${Math.round(vp.width)}×${Math.round(vp.height)} pixels, which is too large. Choose a lower resolution.`);
+      total += vp.width * vp.height;
+    }
+    if (total > 4e8 && !confirm(`This will create about ${Math.round(total / 1e6)} megapixels of images and may use a lot of memory. Continue?`)) return false;
+    for (let k = 0; k < indices.length; k++) {
+      const pg = await doc.getPage(indices[k] + 1);
+      const vp = pg.getViewport({ scale: dpi / 72 });
+      const c = document.createElement('canvas');
+      c.width = Math.round(vp.width);
+      c.height = Math.round(vp.height);
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      await pg.render({ canvasContext: ctx, viewport: vp }).promise;
+      await onPage(c, k, indices[k]);
+      c.width = c.height = 0;
+    }
+    return true;
+  } finally { doc.destroy(); }
+}
+
+async function exportPageImages(o, onProgress) {
+  const flat = await buildPdf();
+  const idx = parseRange(o.range, S.pages.length);
+  const pad = String(S.pages.length).length;
+  const files = [];
+  const ok = await renderPdfPages(flat, idx, o.dpi, async (canvas, k, pageIndex) => {
+    onProgress?.(k / idx.length, `Page ${pageIndex + 1} (${k + 1} of ${idx.length})`);
+    if (o.gray) toGrayscale(canvas);
+    const enc = await encodeCanvas(canvas, o.format, { quality: o.quality / 100, dpi: o.dpi });
+    files.push({ name: `${S.fileName}-p${String(pageIndex + 1).padStart(pad, '0')}.${enc.ext}`, bytes: enc.bytes, mime: enc.mime });
+    await nextFrame();
+  });
+  return ok ? files : null;
+}
+
+/** Fill #printRoot with the pages of the print-ready PDF, each sized with its own @page rule. */
+async function preparePrint(o, rangeText) {
+  const bytes = await makePrintPdf(o, rangeText);
+  const doc = await openForRender(bytes);
+  const root = $('#printRoot');
+  root.textContent = '';
+  const dims = [];
+  for (let i = 1; i <= doc.numPages; i++) dims.push((await doc.getPage(i)).getViewport({ scale: 1 }));
+  // browsers print every page on the first page's paper, so when sizes differ, fit pages onto that paper
+  const first = dims[0];
+  const uniform = dims.every((d) => Math.abs(d.width - first.width) < 1 && Math.abs(d.height - first.height) < 1);
+  let css = `@page { size: ${first.width.toFixed(2)}pt ${first.height.toFixed(2)}pt; margin: 0 }\n`;
+  for (let i = 1; i <= doc.numPages; i++) {
+    const pg = await doc.getPage(i);
+    const own = dims[i - 1];
+    const k = uniform ? 1 : Math.min(first.width / own.width, first.height / own.height);
+    const vp = pg.getViewport({ scale: (200 / 72) * k });
+    const c = document.createElement('canvas');
+    c.width = Math.ceil(first.width * (200 / 72));
+    c.height = Math.ceil(first.height * (200 / 72));
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, c.width, c.height);
+    if (uniform) await pg.render({ canvasContext: ctx, viewport: vp }).promise;
+    else {
+      const t = document.createElement('canvas');
+      t.width = Math.ceil(vp.width);
+      t.height = Math.ceil(vp.height);
+      await pg.render({ canvasContext: t.getContext('2d'), viewport: vp }).promise;
+      ctx.drawImage(t, (c.width - t.width) / 2, (c.height - t.height) / 2);
+    }
+    c.style.cssText = `width:${first.width.toFixed(2)}pt;height:${first.height.toFixed(2)}pt;`;
+    root.append(c);
+  }
+  const style = document.createElement('style');
+  style.id = 'printStyle';
+  style.textContent = css;
+  document.head.append(style);
+  doc.destroy();
+  if (!uniform) toast('The pages have different sizes, so they are fitted onto the first page\'s paper. Pick a paper size in Export to control this.');
+  return { pages: root.children.length, uniform };
+}
+function clearPrint() {
+  $('#printRoot').textContent = '';
+  $('#printStyle')?.remove();
+}
+
+function initExport() {
+  const dlg = $('#expDlg');
+  const tab = (name) => {
+    dlg.querySelectorAll('[data-tab]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
+    dlg.querySelectorAll('[data-panel]').forEach((p) => (p.hidden = p.dataset.panel !== name));
+  };
+  dlg.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => tab(b.dataset.tab)));
+  $('#btnExport').onclick = () => { finishEdit(); setProgress('exp', null); syncImageFields(); dlg.showModal(); };
+  $('#expClose').onclick = () => dlg.close();
+  const lock = (on) => dlg.querySelectorAll('button, select, input').forEach((el) => { if (el.id !== 'expClose') el.disabled = on; });
+  const run = async (fn) => {
+    lock(true);
+    try { await fn(); } catch (err) { console.warn(err); toast(err?.message || String(err), true); }
+    lock(false);
+    setProgress('exp', null);
+  };
+  $('#xDownload').onclick = () => run(async () => {
+    setProgress('exp', 0.3, 'Building the print-ready PDF…');
+    await nextFrame();
+    const bytes = await makePrintPdf(printOptions(), $('#xRangeP').value);
+    saveBytes(`${S.fileName}-print.pdf`, bytes, 'application/pdf');
+    toast('Print-ready PDF downloaded.');
+  });
+  $('#xPrint').onclick = () => run(async () => {
+    setProgress('exp', 0.3, 'Preparing pages…');
+    await nextFrame();
+    await preparePrint(printOptions(), $('#xRangeP').value);
+    setProgress('exp', null);
+    dlg.close();
+    await nextFrame();
+    window.addEventListener('afterprint', clearPrint, { once: true });
+    window.print();
+  });
+  const syncImageFields = () => {
+    const f = $('#iFormat').value;
+    $('#iQuality').closest('label').hidden = !['jpeg', 'webp'].includes(f);
+    $('#iQualityOut').textContent = $('#iQuality').value;
+  };
+  $('#iFormat').onchange = $('#iQuality').oninput = syncImageFields;
+  $('#iExport').onclick = () => run(async () => {
+    const o = {
+      format: $('#iFormat').value, dpi: Number($('#iDpi').value), quality: Number($('#iQuality').value),
+      gray: $('#iGray').checked, range: $('#xRangeI').value,
+    };
+    const files = await exportPageImages(o, (f, m) => setProgress('exp', f, m));
+    if (!files) return;
+    if (files.length === 1) saveBytes(files[0].name, files[0].bytes, files[0].mime);
+    else saveBytes(`${S.fileName}-images.zip`, zipFiles(files), 'application/zip');
+    toast(`Exported ${files.length} image${files.length === 1 ? '' : 's'}.`);
+  });
+}
+
+/* ---------------------------------------------------------------- images: convert / images -> PDF */
+
+async function convertImageFiles(files, o, onProgress) {
+  const out = [], pdfItems = [], errors = [];
+  const used = new Map();
+  for (let k = 0; k < files.length; k++) {
+    const f = files[k];
+    onProgress?.(k / files.length, `${f.name} (${k + 1} of ${files.length})`);
+    await nextFrame();
+    let d;
+    try { d = await decodeImage(f); } catch (err) { errors.push(err.message); continue; }
+    const c = resizeCanvas(d.canvas, { mode: o.resize, max: o.resizeVal, percent: o.resizeVal });
+    if (o.format === 'pdf') {
+      const jpeg = !hasAlpha(c) && /jpe?g/.test(d.type);
+      const enc = await encodeCanvas(c, jpeg ? 'jpeg' : 'png', { quality: o.quality / 100, dpi: o.dpi });
+      pdfItems.push({ bytes: enc.bytes, kind: jpeg ? 'jpg' : 'png', w: c.width, h: c.height });
+    } else {
+      const enc = await encodeCanvas(c, o.format, { quality: o.quality / 100, dpi: o.dpi });
+      const base = f.name.replace(/\.[^.]+$/, '') || 'image';
+      const n = used.get(base) || 0;
+      used.set(base, n + 1);
+      out.push({ name: `${base}${n ? '-' + n : ''}.${enc.ext}`, bytes: enc.bytes, mime: enc.mime });
+    }
+  }
+  if (o.format === 'pdf') {
+    if (!pdfItems.length) throw new Error(errors[0] || 'No images could be read.');
+    return { pdf: await imagesToPdf(PDFLib, pdfItems, { paper: o.paper, orientation: o.orient, margin: o.margin, dpi: o.dpi }), errors, count: pdfItems.length };
+  }
+  if (!out.length) throw new Error(errors[0] || 'No images could be read.');
+  return { files: out, errors, count: out.length };
+}
+
+function initImageTool() {
+  const dlg = $('#imgDlg');
+  let files = [];
+  const list = () => {
+    const ul = $('#imgList');
+    ul.textContent = '';
+    for (const f of files) {
+      const li = document.createElement('li');
+      li.innerHTML = '<span></span><span class="muted"></span>';
+      li.children[0].textContent = f.name;
+      li.children[1].textContent = f.size > 1e6 ? (f.size / 1e6).toFixed(1) + ' MB' : Math.ceil(f.size / 1e3) + ' KB';
+      ul.append(li);
+    }
+    $('#imgCount').textContent = files.length ? `${files.length} image${files.length === 1 ? '' : 's'} chosen` : 'or drop them here (PNG, JPEG, WebP, GIF, BMP, SVG)';
+    $('#imgRun').disabled = !files.length;
+  };
+  const add = (fl) => {
+    const ok = [...fl].filter((f) => f.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|svg|avif)$/i.test(f.name));
+    if (ok.length < fl.length) toast('Some files were skipped because they are not images.', true);
+    files.push(...ok);
+    list();
+  };
+  const fields = () => {
+    const f = $('#cFormat').value;
+    dlg.querySelectorAll('.pdfonly').forEach((el) => (el.hidden = f !== 'pdf'));
+    $('#cQualityRow').hidden = !['jpeg', 'webp', 'pdf'].includes(f);
+    $('#cDpiRow').hidden = f === 'webp';
+    $('#cResizeVal').hidden = $('#cResize').value === 'none';
+    $('#cQualityOut').textContent = $('#cQuality').value;
+    $('#cOpenLabel').textContent = S.pages.length ? 'add the pages to the current document' : 'open the PDF in the editor';
+  };
+  const open = () => { files = []; list(); setProgress('img', null); fields(); dlg.showModal(); };
+  $('#btnImgTool').onclick = $('#btnImages2').onclick = open;
+  $('#imgClose').onclick = () => dlg.close();
+  $('#imgPick').onclick = () => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*'; inp.multiple = true;
+    inp.onchange = () => add(inp.files);
+    inp.click();
+  };
+  const drop = $('#imgDrop');
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.remove('over'); add(e.dataTransfer.files); });
+  $('#cFormat').onchange = $('#cQuality').oninput = fields;
+  $('#cResize').onchange = () => {
+    $('#cResizeVal').value = $('#cResize').value === 'percent' ? 50 : 2000;
+    fields();
+  };
+  $('#imgRun').onclick = async () => {
+    const o = {
+      format: $('#cFormat').value, resize: $('#cResize').value, resizeVal: Number($('#cResizeVal').value) || 100,
+      quality: Number($('#cQuality').value), dpi: Number($('#cDpi').value) || 96,
+      paper: $('#cPaper').value, orient: $('#cOrient').value, margin: Number($('#cMargin').value) || 0,
+    };
+    dlg.querySelectorAll('button, select, input').forEach((el) => { if (el.id !== 'imgClose') el.disabled = true; });
+    try {
+      const r = await convertImageFiles(files, o, (f, m) => setProgress('img', f, m));
+      if (r.pdf) {
+        if ($('#cOpen').checked) {
+          const file = new File([r.pdf], 'images.pdf', { type: 'application/pdf' });
+          dlg.close();
+          if (S.pages.length) await addPdfs([file]); else await openPdf(file);
+        } else {
+          saveBytes('images.pdf', r.pdf, 'application/pdf');
+          toast(`Created a PDF with ${r.count} page${r.count === 1 ? '' : 's'}.`);
+        }
+      } else if (r.files.length === 1) {
+        saveBytes(r.files[0].name, r.files[0].bytes, r.files[0].mime);
+        toast('Converted 1 image.');
+      } else {
+        saveBytes('converted-images.zip', zipFiles(r.files), 'application/zip');
+        toast(`Converted ${r.files.length} images.`);
+      }
+      if (r.errors.length) toast(`${r.errors.length} file${r.errors.length === 1 ? '' : 's'} skipped: ${r.errors[0]}`, true);
+    } catch (err) {
+      console.warn(err);
+      toast(err?.message || String(err), true);
+    }
+    dlg.querySelectorAll('button, select, input').forEach((el) => (el.disabled = false));
+    $('#imgRun').disabled = !files.length;
+    setProgress('img', null);
+  };
+}
+
 /* ---------------------------------------------------------------- wiring */
 
 function deleteSelected() {
@@ -2039,6 +2344,8 @@ function init() {
   initPointer();
   initProps();
   initOcr();
+  initExport();
+  initImageTool();
   initKeys(signature);
 
   $('#btnOpen').onclick = $('#btnOpen2').onclick = () => $('#fileOpen').click();
@@ -2095,7 +2402,7 @@ function init() {
   syncProps();
   updateHistoryButtons();
   // test/automation hook: lets tests inspect state without touching the UI
-  window.__editor = { S, buildPdf, openPdf, convertToDocx };
+  window.__editor = { S, buildPdf, openPdf, convertToDocx, makePrintPdf, exportPageImages, convertImageFiles, preparePrint, clearPrint };
 }
 
 init();

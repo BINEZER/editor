@@ -5,6 +5,6 @@
   "description": "Watermark-free, in-browser PDF editor",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/layout.test.mjs && node test/e2e.js && node test/ocr.e2e.js && node test/docx.e2e.js"
+    "test": "node test/layout.test.mjs && node test/convert.test.mjs && node test/e2e.js && node test/ocr.e2e.js && node test/docx.e2e.js && node test/export.e2e.js"
   }
 }

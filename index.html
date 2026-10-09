@@ -14,6 +14,7 @@
     <button id="btnAdd" class="needs-doc" title="Append the pages of another PDF">Add PDF</button>
     <button id="btnBlank" class="needs-doc" title="Insert a blank page after the current page">+ Blank page</button>
     <button id="btnOcr" class="needs-doc" title="Recognise text in scanned pages (OCR)">OCR</button>
+    <button id="btnImgTool" title="Convert images between formats or turn them into a PDF">Images…</button>
   </div>
 
   <div class="grp needs-doc" id="tools" role="toolbar" aria-label="Tools">
@@ -58,6 +59,7 @@
   </div>
 
   <div class="grp right">
+    <button id="btnExport" class="needs-doc" title="Print-ready PDF, print, or export pages as images">Export…</button>
     <button id="btnDocx" class="needs-doc" title="Convert to an editable Word document">Word (.docx)</button>
     <button id="btnSave" class="primary needs-doc" title="Download edited PDF (Ctrl+S)">Download PDF</button>
   </div>
@@ -75,6 +77,7 @@
       <div class="row">
         <button id="btnOpen2" class="primary big">Open a PDF</button>
         <button id="btnNew" class="big">Start with a blank page</button>
+        <button id="btnImages2" class="big">Images → PDF</button>
       </div>
       <p class="muted">…or drop a PDF anywhere on this window.</p>
     </section>
@@ -146,6 +149,112 @@
     <div class="row"><span class="grow"></span><button class="primary" value="close">Done</button></div>
   </form>
 </dialog>
+
+<dialog id="expDlg">
+  <form method="dialog" id="expForm">
+    <h2>Export</h2>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="print" aria-selected="true">Print-ready PDF</button>
+      <button type="button" role="tab" data-tab="images" aria-selected="false">Page images</button>
+    </div>
+
+    <section data-panel="print">
+      <div class="fields">
+        <label>Paper
+          <select id="xPaper">
+            <option value="auto">Same as the pages</option>
+            <option>A3</option><option selected>A4</option><option>A5</option><option>Letter</option><option>Legal</option><option>Tabloid</option>
+          </select>
+        </label>
+        <label>Orientation
+          <select id="xOrient"><option value="auto">Automatic</option><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select>
+        </label>
+        <label>Scaling
+          <select id="xScale">
+            <option value="shrink">Shrink to fit (never enlarge)</option>
+            <option value="fit">Fit to the printable area</option>
+            <option value="actual">Actual size (100%)</option>
+          </select>
+        </label>
+        <label>Margins (mm) <input type="number" id="xMargin" min="0" max="50" step="1" value="10"></label>
+        <label>Pages per sheet
+          <select id="xNup"><option>1</option><option>2</option><option>4</option><option>6</option><option>9</option></select>
+        </label>
+        <label>Bleed (mm) <input type="number" id="xBleed" min="0" max="20" step="0.5" value="0"></label>
+        <label>Bleed mode
+          <select id="xBleedMode"><option value="blank">Leave the bleed area blank</option><option value="enlarge">Enlarge pages to fill the bleed</option></select>
+        </label>
+        <label>Crop marks <span><input type="checkbox" id="xMarks"> add trim marks</span></label>
+        <label>Pages <input type="text" id="xRangeP" placeholder="all, or e.g. 1-3, 5"></label>
+      </div>
+      <p class="muted" id="xNote">Annotations and the OCR text layer are included. Trim and bleed boxes are written into the PDF.</p>
+      <div class="row">
+        <span class="grow"></span>
+        <button type="button" id="xPrint">Print…</button>
+        <button type="button" id="xDownload" class="primary">Download PDF</button>
+      </div>
+    </section>
+
+    <section data-panel="images" hidden>
+      <div class="fields">
+        <label>Format
+          <select id="iFormat"><option value="png">PNG (lossless)</option><option value="jpeg">JPEG</option><option value="webp">WebP</option><option value="bmp">BMP</option></select>
+        </label>
+        <label>Resolution
+          <select id="iDpi"><option>72</option><option>96</option><option>150</option><option selected>200</option><option>300</option><option>600</option></select>
+        </label>
+        <label>Quality <span><input type="range" id="iQuality" min="40" max="100" value="92"> <output id="iQualityOut">92</output></span></label>
+        <label>Grayscale <span><input type="checkbox" id="iGray"> black and white</span></label>
+        <label>Pages <input type="text" id="xRangeI" placeholder="all, or e.g. 1-3, 5"></label>
+      </div>
+      <p class="muted" id="iNote">The resolution is also written into PNG, JPEG and BMP files. Several pages are saved together as a ZIP.</p>
+      <div class="row"><span class="grow"></span><button type="button" id="iExport" class="primary">Export images</button></div>
+    </section>
+
+    <div id="expProg" hidden><progress id="expBar" max="1" value="0"></progress><div id="expStatus" class="muted"></div></div>
+    <div class="row"><span class="grow"></span><button type="button" id="expClose">Close</button></div>
+  </form>
+</dialog>
+
+<dialog id="imgDlg">
+  <form method="dialog" id="imgForm">
+    <h2>Images</h2>
+    <p class="muted">Convert images between formats, resize them, or combine them into a PDF. Files stay on your device.</p>
+    <div class="dropzone" id="imgDrop">
+      <button type="button" id="imgPick">Choose images…</button>
+      <span class="muted" id="imgCount">or drop them here (PNG, JPEG, WebP, GIF, BMP, SVG)</span>
+    </div>
+    <ul id="imgList"></ul>
+    <div class="fields">
+      <label>Convert to
+        <select id="cFormat">
+          <option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option><option value="bmp">BMP</option>
+          <option value="pdf" selected>PDF (one page per image)</option>
+        </select>
+      </label>
+      <label>Resize
+        <span class="inline">
+          <select id="cResize"><option value="none">Keep original size</option><option value="max">Longest side up to…</option><option value="percent">Scale to a percentage</option></select>
+          <input type="number" id="cResizeVal" min="1" max="20000" value="2000" hidden>
+        </span>
+      </label>
+      <label id="cQualityRow">Quality <span><input type="range" id="cQuality" min="40" max="100" value="92"> <output id="cQualityOut">92</output></span></label>
+      <label id="cDpiRow">Resolution (dpi) <input type="number" id="cDpi" min="36" max="1200" value="150"></label>
+      <label class="pdfonly">Page size
+        <select id="cPaper"><option value="fit">Fit to the image</option><option>A4</option><option>Letter</option><option>A3</option><option>A5</option><option>Legal</option></select>
+      </label>
+      <label class="pdfonly">Orientation
+        <select id="cOrient"><option value="auto">Automatic</option><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select>
+      </label>
+      <label class="pdfonly">Margins (mm) <input type="number" id="cMargin" min="0" max="50" value="10"></label>
+      <label class="pdfonly">Then <span><input type="checkbox" id="cOpen" checked> <span id="cOpenLabel">open the PDF in the editor</span></span></label>
+    </div>
+    <div id="imgProg" hidden><progress id="imgBar" max="1" value="0"></progress><div id="imgStatus" class="muted"></div></div>
+    <div class="row"><span class="grow"></span><button type="button" id="imgClose">Close</button><button type="button" id="imgRun" class="primary" disabled>Convert</button></div>
+  </form>
+</dialog>
+
+<div id="printRoot" aria-hidden="true"></div>
 
 <div id="busy" hidden><div class="spin"></div><span id="busyMsg">Working…</span></div>
 <div id="toast" role="status"></div>

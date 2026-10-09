@@ -11,6 +11,7 @@ All of these are vendored in `vendor/` (no CDN, no network access at runtime).
 | tesseract.js-core | 5.1.1 | Apache-2.0 | Tesseract compiled to WebAssembly |
 | tessdata_best (`eng`, `amh`) | via @tesseract.js-data 1.0.0 | Apache-2.0 | OCR language models |
 | docx | 8.5.0 | MIT (`vendor/DOCX-LICENSE`) | Writing the .docx file |
+| fflate | 0.8.2 | MIT (`vendor/FFLATE-LICENSE`) | ZIP files for multi-page image export |
 | Noto Sans Ethiopic | via @fontsource 5.3.0 | SIL OFL 1.1 | Font for the hidden Amharic text layer, and for test fixtures |
 
 Forbidden by project policy (see `SPEC.md`): GPL/AGPL libraries such as MuPDF and Ghostscript.
