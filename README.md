@@ -23,6 +23,11 @@ http(s), because pdf.js loads its worker as an ES module. Opening `index.html` f
   Amharic). The export gets an invisible text layer, so the PDF is searchable and selectable and looks identical.
   Recognised lines can be changed with Edit text, and the text can be downloaded as `.txt`. "Show recognised words"
   colours each word by confidence (green / amber / red) so you can review weak spots.
+- **Word export** (toolbar → Word (.docx)): converts to an editable `.docx` on your device. Wrapped lines are
+  rejoined into paragraphs (hyphenated words repaired), headings are detected by size, bullets become Word lists,
+  aligned columns of short text become tables, multi-column prose becomes a borderless table so reading order is kept,
+  and pictures are carried across. Scanned pages use their OCR text. Your edits (changed text, added text/images)
+  are included. A report lists pages that need attention.
 - Download a flattened PDF. Page rotation, crop boxes and rotated source pages are handled.
 - Keyboard: V T E H D R O L W for tools, I image, S signature, Ctrl+Z / Ctrl+Shift+Z, Ctrl+S, Delete.
 
@@ -38,17 +43,21 @@ http(s), because pdf.js loads its worker as an ES module. Opening `index.html` f
   layer, but the scanned pixels of other lines are untouched.
 - Text uses the standard PDF fonts (Helvetica, Times, Courier). Characters outside their range, such as
   Ethiopic or CJK, are embedded as an image so they still appear, but they are not selectable.
+- Word export is a best-effort reconstruction: text colours, table borders, ruled lines, vector graphics and page backgrounds are not carried over; rotated
+  text is skipped; fonts are mapped to the nearest common one. Scanned pages without OCR come out as pictures.
+  Highlights, shapes and drawings are not exported (Word has no equivalent).
 - Password-protected PDFs are not supported yet.
 
 ## Tests
 
 ```
-npm test         # node test/e2e.js
+npm test         # layout unit tests + editor, OCR and Word-export end-to-end tests
 ```
 
 Drives the real UI in headless Chromium (Playwright), exports a PDF, then re-opens the export to verify
 the content. It also checks the coordinate mapping for all 16 combinations of source and user page
-rotation by rendering the export and testing pixels.
+rotation by rendering the export and testing pixels. The Word test also converts the `.docx` back to PDF with
+LibreOffice (if installed) and compares the text and page count with the original.
 
 ## Third-party code
 

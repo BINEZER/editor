@@ -58,6 +58,7 @@
   </div>
 
   <div class="grp right">
+    <button id="btnDocx" class="needs-doc" title="Convert to an editable Word document">Word (.docx)</button>
     <button id="btnSave" class="primary needs-doc" title="Download edited PDF (Ctrl+S)">Download PDF</button>
   </div>
 </header>
@@ -134,6 +135,15 @@
       <button type="button" id="ocrClose">Close</button>
       <button type="button" id="ocrRun" class="primary">Run OCR</button>
     </div>
+  </form>
+</dialog>
+
+<dialog id="docxDlg">
+  <form method="dialog">
+    <h2>Converted to Word</h2>
+    <p class="muted" id="docxSummary"></p>
+    <ul id="docxNotes"></ul>
+    <div class="row"><span class="grow"></span><button class="primary" value="close">Done</button></div>
   </form>
 </dialog>
 

@@ -148,3 +148,7 @@ dialog .fields select { width: 100%; }
 .pgi .ocrw.hi { fill: #12b76a; stroke: #12b76a; }
 .pgi .ocrw.mid { fill: #f79009; stroke: #f79009; }
 .pgi .ocrw.lo { fill: #f04438; stroke: #f04438; }
+
+/* DOCX report */
+#docxNotes { margin: 10px 0 0; padding-left: 20px; font-size: 13px; display: grid; gap: 4px; }
+#docxNotes li.warn { color: #b54708; }

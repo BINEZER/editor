@@ -1,5 +1,7 @@
 import * as pdfjsLib from './vendor/pdf.min.mjs';
 import { ocrPages, loadScript } from './ocr.js';
+import { analyze } from './layout.js';
+import { buildDocx } from './docx-build.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('./vendor/pdf.worker.min.mjs', import.meta.url).href;
 const {
@@ -1519,6 +1521,10 @@ function refreshOcrViews(pages) {
 
 let ocrAbort = null;
 async function runOcr() {
+  // lock the controls first: working out which pages need OCR is asynchronous
+  const busyEls = ['#ocrScope', '#ocrLang', '#ocrDpi', '#ocrRun', '#ocrTxt', '#ocrClear'].map($);
+  busyEls.forEach((el) => (el.disabled = true));
+  const unlock = () => { busyEls.forEach((el) => (el.disabled = false)); listOcrResults(); };
   const scope = $('#ocrScope').value;
   const lang = $('#ocrLang').value;
   const dpi = Number($('#ocrDpi').value);
@@ -1529,15 +1535,16 @@ async function runOcr() {
     for (const p of items) if (!(await pageHasText(p)) && !S.ocr.has(p.id)) keep.push(p);
     items = keep;
   }
-  if (!items.length) return toast(scope === 'empty' ? 'Every page already has text — nothing to recognise.' : 'Nothing to recognise.');
+  if (!items.length) {
+    unlock();
+    return toast(scope === 'empty' ? 'Every page already has text — nothing to recognise.' : 'Nothing to recognise.');
+  }
 
   ocrAbort = new AbortController();
   const ctl = ocrAbort;
   $('#ocrProg').hidden = false;
   $('#ocrBar').value = 0;
   $('#ocrStatus').textContent = 'Starting…';
-  const busyEls = ['#ocrScope', '#ocrLang', '#ocrDpi', '#ocrRun', '#ocrTxt', '#ocrClear'].map($);
-  busyEls.forEach((el) => (el.disabled = true));
   $('#ocrClose').textContent = 'Cancel';
   const done = [];
   let failed = null;
@@ -1567,8 +1574,7 @@ async function runOcr() {
   ocrAbort = null;
   $('#ocrProg').hidden = true;
   $('#ocrClose').textContent = 'Close';
-  busyEls.forEach((el) => (el.disabled = false));
-  listOcrResults();
+  unlock();
   if (failed) toast('OCR failed: ' + (failed.message || failed), true);
   else if (ctl.signal.aborted) toast(`OCR cancelled${done.length ? ` — kept ${done.length} finished page${done.length === 1 ? '' : 's'}` : ''}.`);
   else toast(`Recognised text on ${done.length} page${done.length === 1 ? '' : 's'}.`);
@@ -1616,6 +1622,246 @@ function initOcr() {
     listOcrResults();
     S.dirty = true;
   };
+}
+
+/* ---------------------------------------------------------------- PDF -> Word */
+
+const FAMILY_WORD = { Helvetica: 'Arial', Times: 'Times New Roman', Courier: 'Courier New' };
+const canvasBytes = async (c, type, q) =>
+  new Uint8Array(await (await new Promise((r) => c.toBlob(r, type, q))).arrayBuffer());
+
+async function imageObjToBytes(o) {
+  let w = o.width, h = o.height;
+  if (!w || !h) return null;
+  const src = document.createElement('canvas');
+  src.width = w;
+  src.height = h;
+  const sctx = src.getContext('2d');
+  if (o.bitmap) sctx.drawImage(o.bitmap, 0, 0);
+  else if (o.data) {
+    const img = sctx.createImageData(w, h);
+    const d = img.data, v = o.data;
+    if (o.kind === 3) d.set(v.subarray(0, d.length));
+    else if (o.kind === 2) for (let i = 0, j = 0; i < w * h; i++, j += 3) { d[i * 4] = v[j]; d[i * 4 + 1] = v[j + 1]; d[i * 4 + 2] = v[j + 2]; d[i * 4 + 3] = 255; }
+    else if (o.kind === 1) {
+      const rowBytes = (w + 7) >> 3;
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const bit = (v[y * rowBytes + (x >> 3)] >> (7 - (x & 7))) & 1;
+        const k = (y * w + x) * 4;
+        d[k] = d[k + 1] = d[k + 2] = bit ? 255 : 0;
+        d[k + 3] = 255;
+      }
+    } else return null;
+    sctx.putImageData(img, 0, 0);
+  } else return null;
+  const k = Math.min(1, 2400 / Math.max(w, h));
+  let out = src;
+  if (k < 1) {
+    out = document.createElement('canvas');
+    out.width = Math.round(w * k);
+    out.height = Math.round(h * k);
+    out.getContext('2d').drawImage(src, 0, 0, out.width, out.height);
+  }
+  // photos as JPEG (much smaller); anything with transparency, or small graphics, as PNG
+  let hasAlpha = false;
+  if (o.kind === 3 || o.bitmap) {
+    const px = out.getContext('2d').getImageData(0, 0, Math.min(out.width, 64), Math.min(out.height, 64)).data;
+    for (let i = 3; i < px.length; i += 4) if (px[i] < 250) { hasAlpha = true; break; }
+  }
+  if (!hasAlpha && out.width * out.height > 250000) return canvasBytes(out, 'image/jpeg', 0.9);
+  return canvasBytes(out, 'image/png');
+}
+
+const getPageObj = (page, id) =>
+  new Promise((res) => {
+    const t = setTimeout(() => res(null), 4000);
+    try { page.objs.get(id, (o) => { clearTimeout(t); res(o); }); } catch { clearTimeout(t); res(null); }
+  });
+
+async function extractImages(page, vp, p, notes) {
+  let ops;
+  try { ops = await page.getOperatorList(); } catch { return []; }
+  const { OPS, Util } = pdfjsLib;
+  let ctm = [1, 0, 0, 1, 0, 0];
+  const stack = [];
+  const found = [];
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const fn = ops.fnArray[i], args = ops.argsArray[i];
+    if (fn === OPS.save) stack.push(ctm);
+    else if (fn === OPS.restore) ctm = stack.pop() || ctm;
+    else if (fn === OPS.transform) ctm = Util.transform(ctm, args);
+    else if (fn === OPS.paintFormXObjectBegin) { stack.push(ctm); if (args[0]) ctm = Util.transform(ctm, args[0]); }
+    else if (fn === OPS.paintFormXObjectEnd) ctm = stack.pop() || ctm;
+    else if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject) {
+      const [a, b, c, d, e, f] = Util.transform(vp.transform, ctm);
+      const xs = [e, e + a, e + c, e + a + c], ys = [f, f + b, f + d, f + b + d];
+      const x = Math.min(...xs), y = Math.min(...ys), w = Math.max(...xs) - x, h = Math.max(...ys) - y;
+      if (w < 8 || h < 8) continue;
+      found.push({ fn, args, x, y, w, h });
+    }
+  }
+  const images = [];
+  let crop = null;
+  for (const f of found.slice(0, 40)) {
+    let bytes = null;
+    try {
+      const o = f.fn === OPS.paintInlineImageXObject ? f.args[0] : await getPageObj(page, f.args[0]);
+      if (o) bytes = await imageObjToBytes(o);
+    } catch (err) { console.warn('image extraction failed', err); }
+    if (!bytes) {
+      // fall back to cutting the picture out of a rendering of the page
+      crop ||= await renderForOcr(p, 150);
+      const k = crop.scale;
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(f.w * k));
+      c.height = Math.max(1, Math.round(f.h * k));
+      c.getContext('2d').drawImage(crop.canvas, f.x * k, f.y * k, f.w * k, f.h * k, 0, 0, c.width, c.height);
+      bytes = await canvasBytes(c, 'image/png');
+      notes.croppedImages++;
+    }
+    images.push({ x: f.x, y: f.y, w: f.w, h: f.h, data: bytes });
+  }
+  if (found.length > 40) notes.droppedImages += found.length - 40;
+  return images;
+}
+
+async function extractPage(p, notes) {
+  const out = { w: p.w, h: p.h, items: [], images: [], ocr: false };
+  if (!p.blank) {
+    const page = await S.sources[p.src].doc.getPage(p.idx + 1);
+    const vp = page.getViewport({ scale: 1 });
+    const tc = await page.getTextContent();
+    try { await page.getOperatorList(); } catch { /* fonts may stay unresolved */ }
+    const fontInfo = new Map();
+    const infoFor = (name) => {
+      if (!fontInfo.has(name)) {
+        let f = null;
+        try { f = page.commonObjs.get(name); } catch { /* not loaded */ }
+        const real = String(f?.name || tc.styles[name]?.fontFamily || '');
+        fontInfo.set(name, {
+          font: real,
+          bold: !!f?.bold || /bold|black|heavy|semibold/i.test(real),
+          italic: !!f?.italic || /italic|oblique/i.test(real),
+        });
+      }
+      return fontInfo.get(name);
+    };
+    for (const it of tc.items) {
+      if (!it.str || !it.str.trim()) continue;
+      const [a, b, , , e, f] = pdfjsLib.Util.transform(vp.transform, it.transform);
+      const size = Math.hypot(a, b);
+      if (!size || Math.abs(b) > 0.05 * size || a < 0) { notes.skippedRotated++; continue; }
+      const fi = infoFor(it.fontName);
+      out.items.push({ str: it.str, x: e, y: f, size, w: it.width * vp.scale, font: fi.font, bold: fi.bold, italic: fi.italic });
+    }
+    out.images = await extractImages(page, vp, p, notes);
+  }
+  if (!out.items.length) {
+    const o = S.ocr.get(p.id);
+    if (o) {
+      out.ocr = true;
+      // words on one line share a size and baseline (per-word boxes vary with descenders)
+      const lineOf = (x, y, w, h) =>
+        o.lines.find(([, lx, ly, lw, lh]) => x + w / 2 >= lx - 2 && x + w / 2 <= lx + lw + 2 && y + h / 2 >= ly - 2 && y + h / 2 <= ly + lh + 2);
+      for (const [str, x, y, w, h, conf] of o.words) {
+        if (conf < 20) continue;
+        const ln = lineOf(x, y, w, h);
+        const { size, baseline } = ln ? ocrMetrics(ln[0], ln[2], ln[4]) : ocrMetrics(str, y, h);
+        out.items.push({ str, x, y: baseline, size, w, font: 'Arial', bold: false, italic: false });
+      }
+    }
+  }
+  // fold the user's edits in: covered text/pictures disappear, added text and pictures appear
+  const covers = p.annots.filter((a) => a.type === 'whiteout');
+  const covered = (x, y, w, h) =>
+    covers.some((c) => {
+      const ix = Math.min(x + w, c.x + c.w) - Math.max(x, c.x);
+      const iy = Math.min(y + h, c.y + c.h) - Math.max(y, c.y);
+      return ix > 0 && iy > 0 && (ix * iy) / (w * h) > 0.5;
+    });
+  out.items = out.items.filter((it) => !covered(it.x, it.y - it.size * 0.78, Math.max(it.w, 1), it.size));
+  out.images = out.images.filter((im) => !covered(im.x, im.y, im.w, im.h));
+  const m = document.createElement('canvas').getContext('2d');
+  for (const a of p.annots) {
+    if (a.type === 'text') {
+      m.font = `${a.bold ? 'bold ' : ''}${a.size}px ${FONT_CSS[a.font] || FONT_CSS.Helvetica}`;
+      lines(a).forEach((ln, i) => {
+        if (!ln.trim()) return;
+        out.items.push({
+          str: ln, x: a.x, y: a.y + a.size * BASELINE + i * a.size * LEADING, size: a.size, w: m.measureText(ln).width,
+          font: FAMILY_WORD[a.font] || 'Arial', bold: !!a.bold, italic: false, color: a.color,
+        });
+      });
+    } else if (a.type === 'image') {
+      out.images.push({ x: a.x, y: a.y, w: a.w, h: a.h, data: dataUrlBytes(S.images.get(a.img).dataUrl) });
+    } else if (a.type !== 'whiteout') notes.skippedAnnots++;
+  }
+  return out;
+}
+
+async function convertToDocx(progress) {
+  const D = await loadScript('./vendor/docx.umd.js', 'docx');
+  const notes = { skippedRotated: 0, skippedAnnots: 0, croppedImages: 0, droppedImages: 0 };
+  const pages = [];
+  for (let i = 0; i < S.pages.length; i++) {
+    progress?.(`Reading page ${i + 1} of ${S.pages.length}…`);
+    pages.push(await extractPage(S.pages[i], notes));
+    await nextFrame();
+  }
+  progress?.('Building the Word document…');
+  await nextFrame();
+  const analysis = analyze(pages);
+  analysis.title = S.fileName;
+  const blob = await D.Packer.toBlob(buildDocx(D, analysis));
+  return { blob, analysis, notes };
+}
+
+function showDocxReport({ analysis, notes }) {
+  const st = analysis.stats;
+  $('#docxSummary').textContent =
+    `${st.pages} page${st.pages === 1 ? '' : 's'} · ${st.paragraphs} paragraphs (${st.headings} headings, ${st.lists} list items) · ` +
+    `${st.tables} table${st.tables === 1 ? '' : 's'} · ${st.columns} column layout${st.columns === 1 ? '' : 's'} · ${st.images} picture${st.images === 1 ? '' : 's'}`;
+  const ul = $('#docxNotes');
+  ul.textContent = '';
+  const add = (t, warn = false) => { const li = document.createElement('li'); li.textContent = t; if (warn) li.className = 'warn'; ul.append(li); };
+  const pagesWith = (pred) => analysis.pages.map((p, i) => (pred(p.info) ? i + 1 : 0)).filter(Boolean);
+  const scanned = pagesWith((i) => i.scannedNoText);
+  if (scanned.length) add(`Page${scanned.length > 1 ? 's' : ''} ${scanned.join(', ')} ${scanned.length > 1 ? 'are' : 'is'} a picture with no text, so ${scanned.length > 1 ? 'they were' : 'it was'} inserted as an image. Run OCR first to get editable text.`, true);
+  const ocr = pagesWith((i) => i.ocr);
+  if (ocr.length) add(`Page${ocr.length > 1 ? 's' : ''} ${ocr.join(', ')}: text comes from OCR, so please proofread it.`);
+  const tbl = pagesWith((i) => i.tables);
+  if (tbl.length) add(`Tables detected on page${tbl.length > 1 ? 's' : ''} ${tbl.join(', ')} (borders are not carried over). Check them.`);
+  const cols = pagesWith((i) => i.columns);
+  if (cols.length) add(`Multi-column text on page${cols.length > 1 ? 's' : ''} ${cols.join(', ')} was placed in a borderless table so each column keeps its reading order.`);
+  if (notes.skippedRotated) add(`${notes.skippedRotated} piece${notes.skippedRotated > 1 ? 's' : ''} of rotated or mirrored text could not be converted.`, true);
+  if (notes.skippedAnnots) add(`${notes.skippedAnnots} highlight/shape/drawing annotation${notes.skippedAnnots > 1 ? 's were' : ' was'} not included (Word has no equivalent).`);
+  if (notes.droppedImages) add(`${notes.droppedImages} extra pictures were skipped (limit of 40 per page).`, true);
+  if (S.pages.some((p) => p.rot)) add('Page rotation set in this editor is ignored in the Word file.');
+  add('Text colours and exact fonts are approximated; Word may substitute fonts you do not have.');
+  $('#docxDlg').showModal();
+}
+
+async function exportDocx() {
+  if (!S.pages.length) return;
+  finishEdit();
+  busy('Converting to Word…');
+  try {
+    const res = await convertToDocx((m) => busy(m));
+    const url = URL.createObjectURL(res.blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${S.fileName}.docx`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    busy('');
+    showDocxReport(res);
+  } catch (err) {
+    console.error(err);
+    busy('');
+    toast('Could not convert to Word: ' + (err?.message || err), true);
+  }
 }
 
 /* ---------------------------------------------------------------- wiring */
@@ -1681,6 +1927,7 @@ function init() {
   $('#btnAdd').onclick = () => $('#fileAdd').click();
   $('#btnBlank').onclick = insertBlank;
   $('#btnSave').onclick = savePdf;
+  $('#btnDocx').onclick = exportDocx;
   $('#btnUndo').onclick = undo;
   $('#btnRedo').onclick = redo;
   $('#zIn').onclick = () => setZoom(S.zoom * 1.2);
@@ -1729,7 +1976,7 @@ function init() {
   syncProps();
   updateHistoryButtons();
   // test/automation hook: lets tests inspect state without touching the UI
-  window.__editor = { S, buildPdf, openPdf };
+  window.__editor = { S, buildPdf, openPdf, convertToDocx };
 }
 
 init();
